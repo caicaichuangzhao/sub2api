@@ -362,7 +362,7 @@ func TestTryCustomRules_FirstMatchWins(t *testing.T) {
 		},
 	}
 	tokens := UsageTokens{InputTokens: 100, OutputTokens: 50}
-	result := tryCustomRules(channel, 999, 1, "", "claude-opus-4", tokens, 1)
+	result := tryCustomRules(channel, 999, 1, "", "claude-opus-4", tokens, 1, time.Time{})
 	require.NotNil(t, result)
 	// 应使用第一条规则的价格：100*0.01 + 50*0.02 = 2.0
 	require.InDelta(t, 2.0, *result, 1e-12)
@@ -386,7 +386,7 @@ func TestTryCustomRules_SkipsNonMatchingRules(t *testing.T) {
 		},
 	}
 	tokens := UsageTokens{InputTokens: 100}
-	result := tryCustomRules(channel, 999, 1, "", "claude-opus-4", tokens, 1)
+	result := tryCustomRules(channel, 999, 1, "", "claude-opus-4", tokens, 1, time.Time{})
 	require.NotNil(t, result)
 	// 跳过规则1（账号不匹配），使用规则2：100*0.05 = 5.0
 	require.InDelta(t, 5.0, *result, 1e-12)
@@ -404,7 +404,7 @@ func TestTryCustomRules_NoMatch_ReturnsNil(t *testing.T) {
 		},
 	}
 	tokens := UsageTokens{InputTokens: 100}
-	result := tryCustomRules(channel, 999, 2, "", "claude-opus-4", tokens, 1)
+	result := tryCustomRules(channel, 999, 2, "", "claude-opus-4", tokens, 1, time.Time{})
 	require.Nil(t, result) // 账号和分组都不匹配
 }
 
@@ -426,7 +426,7 @@ func TestTryCustomRules_RuleMatchesButModelNot_ContinuesToNext(t *testing.T) {
 		},
 	}
 	tokens := UsageTokens{InputTokens: 100}
-	result := tryCustomRules(channel, 999, 1, "", "claude-opus-4", tokens, 1)
+	result := tryCustomRules(channel, 999, 1, "", "claude-opus-4", tokens, 1, time.Time{})
 	require.NotNil(t, result)
 	require.InDelta(t, 5.0, *result, 1e-12) // 使用规则2
 }

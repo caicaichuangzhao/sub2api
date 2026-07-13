@@ -215,6 +215,8 @@ func applyTimePricingToModelPricing(pricing *ModelPricing, period *TimePricingPe
 	}
 	if period.CacheWritePrice != nil {
 		cloned.CacheCreationPricePerToken = *period.CacheWritePrice
+		cloned.CacheCreationPricePerTokenPriority = *period.CacheWritePrice
+		cloned.CacheCreationPriceExplicit = true
 		cloned.CacheCreation5mPrice = *period.CacheWritePrice
 		cloned.CacheCreation1hPrice = *period.CacheWritePrice
 	}

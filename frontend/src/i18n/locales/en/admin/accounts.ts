@@ -446,6 +446,10 @@ export default {
         responsesStatusAutoUnknown: 'Auto probe: unknown',
         responsesStatusForcedResponses: 'Forced Responses',
         responsesStatusForcedChatCompletions: 'Forced Chat Completions',
+        planType: 'Plan tier (manual override)',
+        planTypeDesc:
+          "Manually correct this account's ChatGPT plan tier (Plus / Pro / Free). Note: a token refresh near expiry or a 429 rate-limit response will auto-overwrite this with the real tier.",
+        planTypeClear: 'Clear (auto-detect)',
         codexCLIOnly: 'Codex official clients only',
         codexCLIOnlyDesc:
           'Only applies to OpenAI OAuth. When enabled, only Codex official client families are allowed; when disabled, the gateway bypasses this restriction and keeps existing behavior.',
@@ -873,6 +877,22 @@ export default {
           missingExchangeParams: 'Missing authorization code, state, or OAuth session',
           failedToExchangeCode: 'Failed to exchange Grok authorization code',
           failedToValidateRT: 'Failed to validate Grok refresh token',
+          errors: {
+            GROK_OAUTH_SESSION_NOT_FOUND:
+              'Grok OAuth session was not found or has expired. Generate a new auth URL and paste the newest callback URL.',
+            GROK_OAUTH_INVALID_STATE:
+              'Grok OAuth state does not match this session. Paste the callback URL from the same generated auth link.',
+            GROK_OAUTH_STATE_REQUIRED:
+              'The callback URL is missing the OAuth state. Paste the full callback URL, not only the code.',
+            GROK_OAUTH_CODE_REQUIRED:
+              'The Grok authorization code is missing. Paste the full callback URL, query string, or code value.',
+            GROK_OAUTH_NO_REFRESH_TOKEN:
+              'The Grok response did not include a refresh token. Generate a new auth URL and approve offline access again.',
+            GROK_OAUTH_PROXY_NOT_AVAILABLE:
+              'Grok OAuth proxy lookup is unavailable. Check the selected proxy and retry.',
+            GROK_OAUTH_PROXY_NOT_FOUND:
+              'The selected proxy could not be found. Choose an available proxy and retry.'
+          },
           oauthOnlyHint: 'Initial Grok support is OAuth subscription-backed Responses API text and reasoning traffic only.'
         },
         // Gemini specific

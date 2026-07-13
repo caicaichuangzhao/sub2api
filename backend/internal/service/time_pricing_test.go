@@ -92,6 +92,23 @@ func TestApplyTimePricingToModelPricing_InheritsUnspecifiedFields(t *testing.T) 
 	require.Equal(t, 0.02, *effective.OutputPrice)
 }
 
+func TestApplyTimePricingToModelPricing_MarksCacheWritePriceExplicit(t *testing.T) {
+	base := &ModelPricing{
+		CacheCreationPricePerToken:         1.25,
+		CacheCreationPricePerTokenPriority: 2.5,
+	}
+	periodCacheWrite := 0.4
+
+	effective := applyTimePricingToModelPricing(base, &TimePricingPeriod{CacheWritePrice: &periodCacheWrite})
+
+	require.NotSame(t, base, effective)
+	require.Equal(t, periodCacheWrite, effective.CacheCreationPricePerToken)
+	require.Equal(t, periodCacheWrite, effective.CacheCreationPricePerTokenPriority)
+	require.Equal(t, periodCacheWrite, effective.CacheCreation5mPrice)
+	require.Equal(t, periodCacheWrite, effective.CacheCreation1hPrice)
+	require.True(t, effective.CacheCreationPriceExplicit)
+}
+
 func TestCalculateTokenStatsCostAt_AppliesPeriodAfterIntervalSelection(t *testing.T) {
 	baseInput := 0.01
 	intervalInput := 0.02
@@ -101,8 +118,8 @@ func TestCalculateTokenStatsCostAt_AppliesPeriodAfterIntervalSelection(t *testin
 		BillingMode: BillingModeToken,
 		InputPrice:  &baseInput,
 		Intervals: []PricingInterval{{
-			MinTokens: 0,
-			MaxTokens: &maxTokens,
+			MinTokens:  0,
+			MaxTokens:  &maxTokens,
 			InputPrice: &intervalInput,
 		}},
 	}

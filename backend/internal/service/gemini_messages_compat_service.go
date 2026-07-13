@@ -1479,7 +1479,7 @@ func (s *GeminiMessagesCompatService) bufferCompatibleRelayMessagesChatCompletio
 		return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", "Failed to parse upstream response")
 	}
 
-	responsesResp := apicompat.ChatCompletionsResponseToResponses(&chatResp, originalModel)
+	responsesResp := apicompat.ChatCompletionsResponseToResponses(&chatResp, originalModel, nil, false, nil)
 	anthropicResp := apicompat.ResponsesToAnthropic(responsesResp, originalModel)
 
 	if s.responseHeaderFilter != nil {
