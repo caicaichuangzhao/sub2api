@@ -263,6 +263,96 @@ Set-Location F:\BC\调查\sub2api-repo\frontend
 - 后端完整 `go test ./...` 通过。
 - 前端 `npm run build` 通过，仅有 Vite chunk/Browserslist 过期等既有警告。
 
+## 2026-07-14 v0.1.153 升级记录
+
+本次从官方 `v0.1.147` 升级到稳定版 `v0.1.153`，合并提交为：
+
+```text
+9c03d0da Merge official v0.1.153 with custom features
+```
+
+官方更新包含 GPT-5.6 缓存写入计费、`parallel_tool_calls`、用户级 Fast/Flex、Codex `image_gen` namespace、Grok API Key/OAuth 与视频编辑、`/alpha/search` 按次计费、custom/MCP 工具桥、调度重试和跨时区统计修复。
+
+本次升级保留并验证了以下定制功能：
+
+- `/v1/images/generations` 顶层 `image`、单图、多图、URL、base64 和 multipart 图片识别。
+- `generations_json -> responses_bridge -> json_edits -> multipart_edits` 聚合兼容链。
+- 已确认 Responses 能力的账号优先 `responses_bridge`。
+- `image_tokens=0` 不视为图生图成功。
+- 协议探测响应隔离、失败响应不污染最终 JSON。
+- 非流式响应头等待心跳和响应体读取心跳。
+- 池模式同账号重试、普通上游故障外层 failover 和 `522` 快速切换。
+- URL/base64 图片响应重写、批量图片、渠道监控、账号批次和调度字段。
+- 时段计费、北京时间默认值和前端多语言时区选择。
+
+### 本次手工融合点
+
+1. `backend/internal/service/openai_images.go` 以本项目聚合实现为主体，只合入官方 Grok 图片模型识别，不能用官方文件整体覆盖。
+2. `image_generation_intent.go` 同时保留顶层图片/`modalities:image` 识别和官方 `image_gen` namespace 识别。
+3. `apicompat/types.go` 同时保留 image generation 字段和官方 namespace、custom、tool_search/MCP 结构。
+4. `openai_gateway_response_handling.go` 同时解析 `image_tokens`、cache read 和 cache creation tokens。
+5. Gemini Messages 的 Chat Completions 回程必须传入新版工具映射参数，不能继续调用旧的双参数函数签名。
+6. GPT-5.6 会根据 `CacheCreationPriceExplicit` 决定是否生成默认缓存写入价格。时段缓存写入价必须同步设置：
+
+```go
+cloned.CacheCreationPricePerTokenPriority = *period.CacheWritePrice
+cloned.CacheCreationPriceExplicit = true
+```
+
+否则时段价格可能被 GPT-5.6 的默认 `input_price * 1.25` 规则覆盖。
+
+### 数据库迁移
+
+数据库迁移按完整文件名记录，所以以下重复数字前缀可以共存：
+
+```text
+173_add_channel_time_pricing.sql
+173_allow_cyber_blocked_usage_request_type.sql
+174_add_usage_logs_api_key_latest_ip_index_notx.sql
+174_group_web_search_price_per_call.sql
+```
+
+本次先恢复升级前真实数据库 dump，再用新镜像启动隔离实例。4 个迁移均成功写入 `schema_migrations`，随后正式 `8080` 数据库也完成同样迁移。
+
+### 测试结果
+
+- 后端定向图片、计费、handler、apicompat 和 unit-tag 测试通过。
+- 后端完整 `go test ./...` 通过。
+- 前端 `149` 个测试文件、`960` 个测试全部通过。
+- 前端 TypeScript/Vite 生产构建通过。
+- 隔离数据库副本和新镜像在 `127.0.0.1:18080` 健康启动。
+- 隔离实例 1K 图生图：HTTP `200`，约 `136.2s`，`responses_bridge`，`image_tokens=1032`，输出约 `2.54 MB`。
+- 最终本地 `8080` 图生图：HTTP `200`，约 `164.9s`，`image_tokens=1032`，输出约 `2.57 MB`。
+- 最终输出 URL 可下载，返回标准 `data[0].url`，参考图输入已被上游实际使用。
+
+### 本地镜像和备份
+
+```text
+image_tag=sub2api-custom:v0.1.153-image-compat-20260714-034453-9c03d0da
+runtime_alias=deploy-sub2api:latest
+image_id=sha256:e5e4809d56fd62d8f34d73d8b2f52cad585f08da751cc2dd4eb41f17c507a26c
+image_size=53.59 MB
+container=sub2api-dev
+port=0.0.0.0:8080->8080/tcp
+health=200 {"status":"ok"}
+```
+
+上传服务器使用的镜像包：
+
+```text
+F:\BC\调查\sub2api-repo\backups\sub2api-image-20260714-042525-v0.1.153-image-compat-9c03d0da.tar
+F:\BC\调查\sub2api-repo\backups\sub2api-image-20260714-042525-v0.1.153-image-compat-9c03d0da.tar.sha256.txt
+F:\BC\调查\sub2api-repo\backups\sub2api-20260714-042525-v0.1.153-image-compat-9c03d0da-metadata.txt
+```
+
+升级前回退点：
+
+```text
+git_tag=backup/pre-v0.1.153-20260714-032651-029787d5
+image_tag=sub2api-custom:v0.1.147-pre-v0.1.153-20260714-032651-029787d5
+database_dump=sub2api-20260714-032651-v0.1.147-pre-v0.1.153-029787d5-db.dump
+```
+
 ## 升级官方版本时怎么做
 
 每次合并官方新版后，先不要急着打包镜像，按下面顺序检查：
@@ -292,6 +382,9 @@ Set-Location F:\BC\调查\sub2api-repo\frontend
 16. 确认 `startOpenAIImagesResponseHeaderHeartbeat` 同时包住原生 Images 与 Responses bridge 的上游请求，等待响应头时也会发送心跳。
 17. 确认 `readOpenAIImagesNonStreamingResponseBody` 同时用于原生 Images JSON 和 Responses bridge 的非流式响应。
 18. 确认 `openAIImagesBufferedResponseWriter.Unwrap` 仍存在，且 JSON 心跳不会让失败探测污染最终响应。
+19. 如果官方增加缓存写入计费字段，确认时段 `CacheWritePrice` 同时设置 priority 价格和 `CacheCreationPriceExplicit=true`。
+20. 如果官方扩展 namespace/custom/tool_search/MCP，确认 image generation 字段没有从 `ResponsesTool` 中被覆盖。
+21. 在升级前数据库副本执行全部迁移，并按完整文件名检查重复数字前缀迁移是否都已记录。
 
 推荐单测命令：
 
