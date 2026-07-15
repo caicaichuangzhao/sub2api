@@ -441,7 +441,7 @@ func buildOpenAIImagesResponsesRequest(ctx context.Context, parsed *OpenAIImages
 	req, _ = sjson.SetRawBytes(req, "input", input)
 
 	action := "generate"
-	if parsed.IsEdits() || len(inputImages) > 0 {
+	if parsed.IsEdits() {
 		action = "edit"
 	}
 	tool := []byte(`{"type":"image_generation","action":"","model":""}`)
@@ -1153,6 +1153,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthNonStreamingResponse(
 	c *gin.Context,
 	responseFormat string,
 	fallbackModel string,
+	requestedSize string,
 ) (OpenAIUsage, int, []string, error) {
 	body, err := s.readOpenAIImagesNonStreamingResponseBody(resp.Body, c)
 	if err != nil {
@@ -1210,6 +1211,9 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthNonStreamingResponse(
 	if strings.TrimSpace(firstMeta.Model) == "" {
 		firstMeta.Model = strings.TrimSpace(fallbackModel)
 	}
+	if normalizeOpenAIResponsesImageResultDimensions(results, requestedSize) {
+		firstMeta.Size = strings.TrimSpace(requestedSize)
+	}
 
 	responseBody, err := buildOpenAIImagesAPIResponse(c, results, createdAt, usageRaw, firstMeta, responseFormat, s.openAIImagesPublicBaseURL(c))
 	if err != nil {
@@ -1228,6 +1232,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthStreamingResponse(
 	responseFormat string,
 	streamPrefix string,
 	fallbackModel string,
+	requestedSize string,
 ) (OpenAIUsage, int, []string, *int, error) {
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	c.Header("Content-Type", "text/event-stream")
@@ -1354,6 +1359,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthStreamingResponse(
 				processDataDone = true
 				return
 			}
+			normalizeOpenAIResponsesImageResultDimensions(finalResults, requestedSize)
 			eventName := streamPrefix + ".completed"
 			for _, img := range finalResults {
 				key := openAIResponsesImageResultKey("", img)
@@ -1405,6 +1411,9 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthStreamingResponse(
 			return nil
 		}
 		if len(pendingResults) > 0 {
+			if normalizeOpenAIResponsesImageResultDimensions(pendingResults, requestedSize) {
+				streamMeta.Size = strings.TrimSpace(requestedSize)
+			}
 			eventName := streamPrefix + ".completed"
 			for _, img := range pendingResults {
 				mergeOpenAIResponsesImageMeta(&img, streamMeta)
@@ -1690,7 +1699,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesResponses(
 	)
 	writerSizeBeforeResponse := c.Writer.Size()
 	if parsed.Stream {
-		usage, imageCount, imageOutputSizes, firstTokenMs, err = s.handleOpenAIImagesOAuthStreamingResponse(resp, c, startTime, parsed.ResponseFormat, openAIImagesStreamPrefix(parsed), requestModel)
+		usage, imageCount, imageOutputSizes, firstTokenMs, err = s.handleOpenAIImagesOAuthStreamingResponse(resp, c, startTime, parsed.ResponseFormat, openAIImagesStreamPrefix(parsed), requestModel, parsed.Size)
 		if err != nil {
 			if imageCount > 0 {
 				return &OpenAIForwardResult{
@@ -1720,7 +1729,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesResponses(
 			)
 		}
 	} else {
-		usage, imageCount, imageOutputSizes, err = s.handleOpenAIImagesOAuthNonStreamingResponse(resp, c, parsed.ResponseFormat, requestModel)
+		usage, imageCount, imageOutputSizes, err = s.handleOpenAIImagesOAuthNonStreamingResponse(resp, c, parsed.ResponseFormat, requestModel, parsed.Size)
 		if err != nil {
 			return nil, s.handleOpenAIImagesOAuthResponseError(
 				upstreamCtx,

@@ -584,7 +584,7 @@ func TestOpenAIGatewayServiceParseOpenAIImagesRequest_JSONGenerationTopLevelImag
 
 	upstreamBody, err := buildOpenAIImagesResponsesRequest(context.Background(), parsed, "gpt-image-2")
 	require.NoError(t, err)
-	require.Equal(t, "edit", gjson.GetBytes(upstreamBody, "tools.0.action").String())
+	require.Equal(t, "generate", gjson.GetBytes(upstreamBody, "tools.0.action").String())
 	require.Equal(t, "1088x1440", gjson.GetBytes(upstreamBody, "tools.0.size").String())
 	require.Equal(t, "data:image/jpeg;base64,c291cmNlLWltYWdlLWJ5dGVz", gjson.GetBytes(upstreamBody, "input.0.content.1.image_url").String())
 }
@@ -1567,7 +1567,7 @@ func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationWithInputImageU
 	require.Equal(t, "application/json; charset=utf-8", rec.Header().Get("Content-Type"))
 	require.True(t, gjson.GetBytes(upstream.bodies[1], "stream").Bool())
 	require.Equal(t, "image_generation", gjson.GetBytes(upstream.bodies[1], "tools.0.type").String())
-	require.Equal(t, "edit", gjson.GetBytes(upstream.bodies[1], "tools.0.action").String())
+	require.Equal(t, "generate", gjson.GetBytes(upstream.bodies[1], "tools.0.action").String())
 	require.Equal(t, "gpt-image-2-codex", gjson.GetBytes(upstream.bodies[1], "tools.0.model").String())
 	require.Equal(t, "1088x1440", gjson.GetBytes(upstream.bodies[1], "tools.0.size").String())
 	require.Equal(t, "make a portrait book cover in the same anime style", gjson.GetBytes(upstream.bodies[1], "input.0.content.0.text").String())
@@ -1723,7 +1723,7 @@ func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationResponsesBridge
 	require.Len(t, upstream.requests, 2)
 	require.Equal(t, "https://image-upstream.example/v1/images/generations", upstream.requests[0].URL.String())
 	require.Equal(t, "https://image-upstream.example/v1/responses", upstream.requests[1].URL.String())
-	require.Equal(t, "edit", gjson.GetBytes(upstream.bodies[1], "tools.0.action").String())
+	require.Equal(t, "generate", gjson.GetBytes(upstream.bodies[1], "tools.0.action").String())
 	require.Equal(t, "data:image/png;base64,cmVmZXJlbmNlLWltYWdl", gjson.GetBytes(upstream.bodies[1], "input.0.content.1.image_url").String())
 
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -1743,7 +1743,7 @@ func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationResponsesBridge
 	require.NotNil(t, secondResult)
 	require.Len(t, upstream.requests, 3)
 	require.Equal(t, "https://image-upstream.example/v1/responses", upstream.requests[2].URL.String())
-	require.Equal(t, "edit", gjson.GetBytes(upstream.bodies[2], "tools.0.action").String())
+	require.Equal(t, "generate", gjson.GetBytes(upstream.bodies[2], "tools.0.action").String())
 	require.Equal(t, http.StatusOK, secondRec.Code)
 	require.Equal(t, "preferred route used image", gjson.Get(secondRec.Body.String(), "data.0.revised_prompt").String())
 }
@@ -2218,7 +2218,7 @@ func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationConfirmedRespon
 	require.Equal(t, 100, result.Usage.ImageInputTokens)
 	require.Len(t, upstream.requests, 1)
 	require.Equal(t, "https://image-upstream.example/v1/responses", upstream.requests[0].URL.String())
-	require.Equal(t, "edit", gjson.GetBytes(upstream.bodies[0], "tools.0.action").String())
+	require.Equal(t, "generate", gjson.GetBytes(upstream.bodies[0], "tools.0.action").String())
 	require.Equal(t, "data:image/png;base64,cmVmZXJlbmNlLWltYWdl", gjson.GetBytes(upstream.bodies[0], "input.0.content.1.image_url").String())
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, "responses bridge first", gjson.Get(rec.Body.String(), "data.0.revised_prompt").String())
@@ -3188,7 +3188,7 @@ func TestBuildOpenAIImagesResponsesRequest_StripsInputFidelity(t *testing.T) {
 	require.Equal(t, "edit", gjson.GetBytes(body, "tools.0.action").String())
 }
 
-func TestBuildOpenAIImagesResponsesRequest_GenerationWithInputImageUsesEditAction(t *testing.T) {
+func TestBuildOpenAIImagesResponsesRequest_GenerationWithInputImageUsesGenerateAction(t *testing.T) {
 	parsed := &OpenAIImagesRequest{
 		Endpoint:       openAIImagesGenerationsEndpoint,
 		Model:          "gpt-image-2",
@@ -3198,7 +3198,7 @@ func TestBuildOpenAIImagesResponsesRequest_GenerationWithInputImageUsesEditActio
 
 	body, err := buildOpenAIImagesResponsesRequest(context.Background(), parsed, "gpt-image-2")
 	require.NoError(t, err)
-	require.Equal(t, "edit", gjson.GetBytes(body, "tools.0.action").String())
+	require.Equal(t, "generate", gjson.GetBytes(body, "tools.0.action").String())
 	require.Equal(t, "data:image/png;base64,QUJD", gjson.GetBytes(body, "input.0.content.1.image_url").String())
 }
 

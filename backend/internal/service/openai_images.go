@@ -2040,7 +2040,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKeyInternal(
 			ImageOutputSizes: imageOutputSizes,
 		}, nil
 	} else {
-		nonStreamResp, err := s.prepareOpenAIImagesNonStreamingResponse(resp, c, parsed.ResponseFormat, s.openAIImagesPublicBaseURL(c))
+		nonStreamResp, err := s.prepareOpenAIImagesNonStreamingResponse(resp, c, parsed.ResponseFormat, s.openAIImagesPublicBaseURL(c), parsed.Size)
 		if err != nil {
 			return nil, err
 		}
@@ -2373,8 +2373,8 @@ type openAIImagesNonStreamingResponse struct {
 	ImageOutputSizes []string
 }
 
-func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(resp *http.Response, c *gin.Context, responseFormat string, publicBaseURL string) (OpenAIUsage, int, []string, error) {
-	result, err := s.prepareOpenAIImagesNonStreamingResponse(resp, c, responseFormat, publicBaseURL)
+func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(resp *http.Response, c *gin.Context, responseFormat string, publicBaseURL string, requestedSize string) (OpenAIUsage, int, []string, error) {
+	result, err := s.prepareOpenAIImagesNonStreamingResponse(resp, c, responseFormat, publicBaseURL, requestedSize)
 	if err != nil {
 		return OpenAIUsage{}, 0, nil, err
 	}
@@ -2382,14 +2382,17 @@ func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(resp *http
 	return result.Usage, result.ImageCount, result.ImageOutputSizes, nil
 }
 
-func (s *OpenAIGatewayService) prepareOpenAIImagesNonStreamingResponse(resp *http.Response, c *gin.Context, responseFormat string, publicBaseURL string) (*openAIImagesNonStreamingResponse, error) {
+func (s *OpenAIGatewayService) prepareOpenAIImagesNonStreamingResponse(resp *http.Response, c *gin.Context, responseFormat string, publicBaseURL string, requestedSize string) (*openAIImagesNonStreamingResponse, error) {
 	body, err := s.readOpenAIImagesNonStreamingResponseBody(resp.Body, c)
 	if err != nil {
 		return nil, err
 	}
 	responseBody := body
+	if normalized, ok := normalizeOpenAIImagesResponseBodyDimensions(responseBody, requestedSize); ok {
+		responseBody = normalized
+	}
 	if strings.EqualFold(strings.TrimSpace(responseFormat), "url") {
-		if rewritten, changed := rewriteOpenAIImagesURLResponseBody(c, body, publicBaseURL); changed {
+		if rewritten, changed := rewriteOpenAIImagesURLResponseBody(c, responseBody, publicBaseURL); changed {
 			responseBody = rewritten
 		}
 	}
@@ -2900,7 +2903,8 @@ func normalizeOpenAIImageBase64(raw string) string {
 		}
 	}
 	raw = strings.TrimSpace(raw)
-	raw = strings.TrimRight(raw, "=") + strings.Repeat("=", (4-len(raw)%4)%4)
+	raw = strings.TrimRight(raw, "=")
+	raw += strings.Repeat("=", (4-len(raw)%4)%4)
 	if raw == "" {
 		return ""
 	}
