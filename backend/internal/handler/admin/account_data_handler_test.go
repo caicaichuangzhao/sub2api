@@ -70,6 +70,7 @@ func setupAccountDataRouter() (*gin.Engine, *stubAdminService) {
 		nil,
 		nil,
 		nil,
+		nil,
 	)
 
 	router.GET("/api/v1/admin/accounts/data", h.ExportData)
@@ -94,6 +95,7 @@ func setupAccountDataRouterWithModelSync(upstream service.HTTPUpstream) (*gin.En
 
 	h := NewAccountHandler(
 		adminSvc,
+		nil,
 		nil,
 		nil,
 		nil,
