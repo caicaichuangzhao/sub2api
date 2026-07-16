@@ -1159,7 +1159,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthNonStreamingResponse(
 	c *gin.Context,
 	responseFormat string,
 	fallbackModel string,
-	requestedSize string,
+	_ string,
 ) (OpenAIUsage, int, []string, error) {
 	body, err := s.readOpenAIImagesNonStreamingResponseBody(resp.Body, c)
 	if err != nil {
@@ -1217,9 +1217,6 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthNonStreamingResponse(
 	if strings.TrimSpace(firstMeta.Model) == "" {
 		firstMeta.Model = strings.TrimSpace(fallbackModel)
 	}
-	if normalizeOpenAIResponsesImageResultDimensions(results, requestedSize) {
-		firstMeta.Size = strings.TrimSpace(requestedSize)
-	}
 	reconcileOpenAIResponsesImageResultSizes(results, &firstMeta)
 
 	responseBody, err := buildOpenAIImagesAPIResponse(c, results, createdAt, usageRaw, firstMeta, responseFormat, s.openAIImagesPublicBaseURL(c))
@@ -1239,7 +1236,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthStreamingResponse(
 	responseFormat string,
 	streamPrefix string,
 	fallbackModel string,
-	requestedSize string,
+	_ string,
 ) (OpenAIUsage, int, []string, *int, error) {
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	c.Header("Content-Type", "text/event-stream")
@@ -1366,7 +1363,6 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthStreamingResponse(
 				processDataDone = true
 				return
 			}
-			normalizeOpenAIResponsesImageResultDimensions(finalResults, requestedSize)
 			reconcileOpenAIResponsesImageResultSizes(finalResults, nil)
 			eventName := streamPrefix + ".completed"
 			for _, img := range finalResults {
@@ -1424,7 +1420,6 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthStreamingResponse(
 			for i := range finalResults {
 				mergeOpenAIResponsesImageMeta(&finalResults[i], streamMeta)
 			}
-			normalizeOpenAIResponsesImageResultDimensions(finalResults, requestedSize)
 			reconcileOpenAIResponsesImageResultSizes(finalResults, nil)
 			for _, img := range finalResults {
 				key := openAIResponsesImageResultKey("", img)

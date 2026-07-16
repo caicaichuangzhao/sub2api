@@ -905,7 +905,6 @@ func shouldContinueOpenAIImagesCompatibleAggregate(err error) bool {
 	if isOpenAIImagesIgnoredInputFailover(err) {
 		return true
 	}
-
 	statusCode, detail := openAIImagesCompatibleAggregateErrorDetail(err)
 	if statusCode <= 0 || statusCode == openAIImagesCloudflareTimeoutStatus {
 		return false
@@ -2382,8 +2381,8 @@ type openAIImagesNonStreamingResponse struct {
 	ImageOutputSizes []string
 }
 
-func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(resp *http.Response, c *gin.Context, responseFormat string, publicBaseURL string, requestedSize string) (OpenAIUsage, int, []string, error) {
-	result, err := s.prepareOpenAIImagesNonStreamingResponse(resp, c, responseFormat, publicBaseURL, requestedSize)
+func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(resp *http.Response, c *gin.Context, responseFormat string, publicBaseURL string, _ string) (OpenAIUsage, int, []string, error) {
+	result, err := s.prepareOpenAIImagesNonStreamingResponse(resp, c, responseFormat, publicBaseURL, "")
 	if err != nil {
 		return OpenAIUsage{}, 0, nil, err
 	}
@@ -2391,15 +2390,12 @@ func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(resp *http
 	return result.Usage, result.ImageCount, result.ImageOutputSizes, nil
 }
 
-func (s *OpenAIGatewayService) prepareOpenAIImagesNonStreamingResponse(resp *http.Response, c *gin.Context, responseFormat string, publicBaseURL string, requestedSize string) (*openAIImagesNonStreamingResponse, error) {
+func (s *OpenAIGatewayService) prepareOpenAIImagesNonStreamingResponse(resp *http.Response, c *gin.Context, responseFormat string, publicBaseURL string, _ string) (*openAIImagesNonStreamingResponse, error) {
 	body, err := s.readOpenAIImagesNonStreamingResponseBody(resp.Body, c)
 	if err != nil {
 		return nil, err
 	}
 	responseBody := body
-	if normalized, ok := normalizeOpenAIImagesResponseBodyDimensions(responseBody, requestedSize); ok {
-		responseBody = normalized
-	}
 	if strings.EqualFold(strings.TrimSpace(responseFormat), "url") {
 		if rewritten, changed := rewriteOpenAIImagesURLResponseBody(c, responseBody, publicBaseURL); changed {
 			responseBody = rewritten
@@ -2420,7 +2416,6 @@ func (s *OpenAIGatewayService) prepareOpenAIImagesNonStreamingResponse(resp *htt
 		ImageOutputSizes: collectOpenAIResponseImageOutputSizesFromJSONBytes(responseBody),
 	}, nil
 }
-
 func (s *OpenAIGatewayService) writeOpenAIImagesNonStreamingResponse(resp *http.Response, c *gin.Context, result *openAIImagesNonStreamingResponse) {
 	if result == nil {
 		return
