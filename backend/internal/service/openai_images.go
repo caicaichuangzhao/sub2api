@@ -911,9 +911,6 @@ func shouldContinueOpenAIImagesCompatibleAggregate(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
-	if isOpenAIImagesIgnoredInputFailover(err) {
-		return true
-	}
 	statusCode, detail := openAIImagesCompatibleAggregateErrorDetail(err)
 	if statusCode <= 0 || statusCode == openAIImagesCloudflareTimeoutStatus {
 		return false
@@ -1156,10 +1153,6 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKeyGenerationProbe(
 	parsed *OpenAIImagesRequest,
 	channelMappedModel string,
 ) (*OpenAIForwardResult, error) {
-	const maxIgnoredImageRetries = 0
-	options := &openAIImagesAPIKeyForwardOptions{
-		FallbackIgnoredGenerationToJSONEdit: true,
-	}
 	probeBody := body
 	if hasOpenAIImagesInput(parsed) {
 		var err error
@@ -1168,18 +1161,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKeyGenerationProbe(
 			return nil, err
 		}
 	}
-	for attempt := 0; ; attempt++ {
-		result, err := s.forwardOpenAIImagesAPIKeyInternal(ctx, c, account, probeBody, parsed, channelMappedModel, options)
-		if err == nil || attempt >= maxIgnoredImageRetries || !isOpenAIImagesIgnoredInputFailover(err) {
-			return result, err
-		}
-		logger.LegacyPrintf(
-			"service.openai_gateway",
-			"[OpenAI] Images generation ignored input image, retrying original generations route account=%d attempt=%d",
-			account.ID,
-			attempt+1,
-		)
-	}
+	return s.forwardOpenAIImagesAPIKeyInternal(ctx, c, account, probeBody, parsed, channelMappedModel, nil)
 }
 
 func buildOpenAIImagesAPIKeyGenerationInputBody(ctx context.Context, parsed *OpenAIImagesRequest) ([]byte, error) {
@@ -1256,18 +1238,6 @@ func buildOpenAIImagesAPIKeyGenerationInputBody(ctx context.Context, parsed *Ope
 	return marshalOpenAIUpstreamJSON(payload)
 }
 
-func isOpenAIImagesIgnoredInputFailover(err error) bool {
-	var failoverErr *UpstreamFailoverError
-	if !errors.As(err, &failoverErr) || failoverErr == nil {
-		return false
-	}
-	if failoverErr.StatusCode != http.StatusBadGateway {
-		return false
-	}
-	imageTokens, ok := openAIImagesResponseInputImageTokens(failoverErr.ResponseBody)
-	return ok && imageTokens == 0
-}
-
 func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKeyAsMultipartEdit(
 	ctx context.Context,
 	c *gin.Context,
@@ -1311,11 +1281,10 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKeyAsMultipartEditForAggreg
 }
 
 type openAIImagesAPIKeyForwardOptions struct {
-	FallbackBody                        []byte
-	FallbackParsed                      *OpenAIImagesRequest
-	CustomJSONEdit                      bool
-	FallbackToJSONEdit                  bool
-	FallbackIgnoredGenerationToJSONEdit bool
+	FallbackBody       []byte
+	FallbackParsed     *OpenAIImagesRequest
+	CustomJSONEdit     bool
+	FallbackToJSONEdit bool
 }
 
 func shouldFallbackOpenAIImagesAPIKeyMultipartEdit(
@@ -1980,9 +1949,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKeyInternal(
 				parsed.Endpoint,
 				account.ID,
 			)
-			return s.forwardOpenAIImagesAPIKeyInternal(ctx, c, account, options.FallbackBody, options.FallbackParsed, channelMappedModel, &openAIImagesAPIKeyForwardOptions{
-				FallbackIgnoredGenerationToJSONEdit: true,
-			})
+			return s.forwardOpenAIImagesAPIKeyInternal(ctx, c, account, options.FallbackBody, options.FallbackParsed, channelMappedModel, nil)
 		}
 		if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -2052,32 +2019,6 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKeyInternal(
 		nonStreamResp, err := s.prepareOpenAIImagesNonStreamingResponse(resp, c, parsed.ResponseFormat, s.openAIImagesPublicBaseURL(c), parsed.Size)
 		if err != nil {
 			return nil, err
-		}
-		if shouldFallbackOpenAIImagesAPIKeyGenerationToJSONEditAfterSuccess(parsed, options, nonStreamResp.Body) {
-			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-				Platform:           account.Platform,
-				AccountID:          account.ID,
-				AccountName:        account.Name,
-				UpstreamStatusCode: resp.StatusCode,
-				UpstreamRequestID:  resp.Header.Get("x-request-id"),
-				UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
-				Kind:               "fallback",
-				Message:            "upstream generation ignored image input",
-			})
-			logger.LegacyPrintf(
-				"service.openai_gateway",
-				"[OpenAI] Images generation JSON edit fallback after zero image input tokens endpoint=%s account=%d",
-				parsed.Endpoint,
-				account.ID,
-			)
-			if options != nil && options.FallbackIgnoredGenerationToJSONEdit {
-				return nil, &UpstreamFailoverError{
-					StatusCode:             http.StatusBadGateway,
-					ResponseBody:           nonStreamResp.Body,
-					RetryableOnSameAccount: false,
-				}
-			}
-			return s.forwardOpenAIImagesAPIKeyAsJSONEdit(ctx, c, account, parsed, channelMappedModel)
 		}
 		s.writeOpenAIImagesNonStreamingResponse(resp, c, nonStreamResp)
 		usage = nonStreamResp.Usage
@@ -2194,42 +2135,6 @@ func shouldRetryOpenAIImagesAPIKeySameAccount(account *Account, statusCode int, 
 		return true
 	}
 	return isOpenAITransientProcessingError(statusCode, upstreamMsg, upstreamBody)
-}
-
-func shouldFallbackOpenAIImagesAPIKeyGenerationToJSONEditAfterSuccess(
-	parsed *OpenAIImagesRequest,
-	options *openAIImagesAPIKeyForwardOptions,
-	responseBody []byte,
-) bool {
-	if parsed == nil || options == nil || (!options.FallbackToJSONEdit && !options.FallbackIgnoredGenerationToJSONEdit) {
-		return false
-	}
-	if parsed.Multipart || parsed.Endpoint != openAIImagesGenerationsEndpoint {
-		return false
-	}
-	if !hasOpenAIImagesInput(parsed) {
-		return false
-	}
-	imageTokens, ok := openAIImagesResponseInputImageTokens(responseBody)
-	return ok && imageTokens == 0
-}
-
-func openAIImagesResponseInputImageTokens(body []byte) (int64, bool) {
-	if len(body) == 0 || !gjson.ValidBytes(body) {
-		return 0, false
-	}
-	for _, path := range []string{
-		"usage.input_tokens_details.image_tokens",
-		"usage.prompt_tokens_details.image_tokens",
-		"response.usage.input_tokens_details.image_tokens",
-		"response.usage.prompt_tokens_details.image_tokens",
-	} {
-		result := gjson.GetBytes(body, path)
-		if result.Exists() {
-			return result.Int(), true
-		}
-	}
-	return 0, false
 }
 
 func buildOpenAIImagesURL(base string, endpoint string) string {

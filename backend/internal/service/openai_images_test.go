@@ -1966,7 +1966,7 @@ func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationAllProtocolErro
 	require.NotContains(t, rec.Body.String(), "JSON edits content type unsupported")
 }
 
-func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationIgnoredImageFallsThroughToResponses(t *testing.T) {
+func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationZeroReportedImageTokensStillReturnsNativeGeneration(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{
 		"model":"gpt-image-2",
@@ -1993,17 +1993,6 @@ func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationIgnoredImageFal
 				},
 				Body: io.NopCloser(strings.NewReader(`{"created":1710000013,"data":[{"b64_json":"dGV4dC1vbmx5","revised_prompt":"ignored reference","output_format":"png"}],"usage":{"input_tokens":20,"input_tokens_details":{"image_tokens":0,"text_tokens":20},"output_tokens":11}}`)),
 			},
-			{
-				StatusCode: http.StatusOK,
-				Header: http.Header{
-					"Content-Type": []string{"text/event-stream"},
-					"X-Request-Id": []string{"req_img_responses_used_image"},
-				},
-				Body: io.NopCloser(strings.NewReader(
-					"data: {\"type\":\"response.completed\",\"response\":{\"created_at\":1710000013,\"usage\":{\"input_tokens\":120,\"input_tokens_details\":{\"image_tokens\":100,\"text_tokens\":20},\"output_tokens\":11,\"output_tokens_details\":{\"image_tokens\":11}},\"tool_usage\":{\"image_gen\":{\"images\":1}},\"output\":[{\"type\":\"image_generation_call\",\"result\":\"dXNlZC1pbWFnZQ==\",\"revised_prompt\":\"used image\",\"output_format\":\"png\"}]}}\n\n" +
-						"data: [DONE]\n\n",
-				)),
-			},
 		},
 	}
 	svc := &OpenAIGatewayService{
@@ -2027,12 +2016,11 @@ func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationIgnoredImageFal
 	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	require.Equal(t, 100, result.Usage.ImageInputTokens)
-	require.Len(t, upstream.requests, 2)
+	require.Equal(t, 0, result.Usage.ImageInputTokens)
+	require.Len(t, upstream.requests, 1)
 	require.Equal(t, "https://image-upstream.example/v1/images/generations", upstream.requests[0].URL.String())
-	require.Equal(t, "https://image-upstream.example/v1/responses", upstream.requests[1].URL.String())
 	require.Equal(t, http.StatusOK, rec.Code)
-	require.Equal(t, "used image", gjson.Get(rec.Body.String(), "data.0.revised_prompt").String())
+	require.Equal(t, "ignored reference", gjson.Get(rec.Body.String(), "data.0.revised_prompt").String())
 }
 
 func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationAggregatePoolServerErrorReturnsBeforeSlowFallbacks(t *testing.T) {
