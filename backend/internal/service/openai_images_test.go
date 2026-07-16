@@ -1647,7 +1647,7 @@ func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationWithInputImageU
 	require.True(t, strings.HasPrefix(url, "http://api.example.com/api/v1/generated-images/"), url)
 }
 
-func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationResponsesBridgeReportsImageInputTokens(t *testing.T) {
+func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationResponsesFallbackDoesNotOverrideNativePreference(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{
 		"model":"gpt-image-2",
@@ -1688,13 +1688,10 @@ func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationResponsesBridge
 			{
 				StatusCode: http.StatusOK,
 				Header: http.Header{
-					"Content-Type": []string{"text/event-stream"},
-					"X-Request-Id": []string{"req_img_responses_preferred_route"},
+					"Content-Type": []string{"application/json"},
+					"X-Request-Id": []string{"req_img_generation_after_responses_fallback"},
 				},
-				Body: io.NopCloser(strings.NewReader(
-					"data: {\"type\":\"response.completed\",\"response\":{\"created_at\":1710000014,\"usage\":{\"input_tokens\":120,\"input_tokens_details\":{\"image_tokens\":100,\"text_tokens\":20},\"output_tokens\":11,\"output_tokens_details\":{\"image_tokens\":11}},\"tool_usage\":{\"image_gen\":{\"images\":1}},\"output\":[{\"type\":\"image_generation_call\",\"result\":\"cHJlZmVycmVkLXJvdXRl\",\"revised_prompt\":\"preferred route used image\",\"output_format\":\"png\"}]}}\n\n" +
-						"data: [DONE]\n\n",
-				)),
+				Body: io.NopCloser(strings.NewReader(`{"created":1710000014,"data":[{"b64_json":"bmF0aXZlLWFmdGVyLWZhbGxiYWNr","revised_prompt":"native generation after fallback","output_format":"png"}],"usage":{"input_tokens":120,"input_tokens_details":{"image_tokens":100,"text_tokens":20},"output_tokens":11}}`)),
 			},
 		},
 	}
@@ -1742,10 +1739,10 @@ func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationResponsesBridge
 	require.NoError(t, err)
 	require.NotNil(t, secondResult)
 	require.Len(t, upstream.requests, 3)
-	require.Equal(t, "https://image-upstream.example/v1/responses", upstream.requests[2].URL.String())
-	require.Equal(t, "generate", gjson.GetBytes(upstream.bodies[2], "tools.0.action").String())
+	require.Equal(t, "https://image-upstream.example/v1/images/generations", upstream.requests[2].URL.String())
+	require.Equal(t, "data:image/png;base64,cmVmZXJlbmNlLWltYWdl", gjson.GetBytes(upstream.bodies[2], "image.0").String())
 	require.Equal(t, http.StatusOK, secondRec.Code)
-	require.Equal(t, "preferred route used image", gjson.Get(secondRec.Body.String(), "data.0.revised_prompt").String())
+	require.Equal(t, "native generation after fallback", gjson.Get(secondRec.Body.String(), "data.0.revised_prompt").String())
 }
 
 func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationFailureFallsThroughToResponses(t *testing.T) {
@@ -2160,7 +2157,7 @@ func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationAggregateUsesVa
 	require.Equal(t, "used reference image", gjson.Get(rec.Body.String(), "data.0.revised_prompt").String())
 }
 
-func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationConfirmedResponsesUsesBridgeFirst(t *testing.T) {
+func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationWithInputImagePrefersNativeGeneration(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{
 		"model":"gpt-image-2",
@@ -2181,13 +2178,10 @@ func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationConfirmedRespon
 			{
 				StatusCode: http.StatusOK,
 				Header: http.Header{
-					"Content-Type": []string{"text/event-stream"},
-					"X-Request-Id": []string{"req_img_responses_capability_preferred"},
+					"Content-Type": []string{"application/json"},
+					"X-Request-Id": []string{"req_img_native_generation_preferred"},
 				},
-				Body: io.NopCloser(strings.NewReader(
-					"data: {\"type\":\"response.completed\",\"response\":{\"created_at\":1710000015,\"usage\":{\"input_tokens\":120,\"input_tokens_details\":{\"image_tokens\":100,\"text_tokens\":20},\"output_tokens\":11,\"output_tokens_details\":{\"image_tokens\":11}},\"tool_usage\":{\"image_gen\":{\"images\":1}},\"output\":[{\"type\":\"image_generation_call\",\"result\":\"cmVzcG9uc2VzLWZpcnN0\",\"revised_prompt\":\"responses bridge first\",\"output_format\":\"png\"}]}}\n\n" +
-						"data: [DONE]\n\n",
-				)),
+				Body: io.NopCloser(strings.NewReader(`{"created":1710000015,"data":[{"b64_json":"bmF0aXZlLWZpcnN0","revised_prompt":"native generation first","output_format":"png"}],"usage":{"input_tokens":120,"input_tokens_details":{"image_tokens":100,"text_tokens":20},"output_tokens":11}}`)),
 			},
 		},
 	}
@@ -2217,11 +2211,10 @@ func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationConfirmedRespon
 	require.NotNil(t, result)
 	require.Equal(t, 100, result.Usage.ImageInputTokens)
 	require.Len(t, upstream.requests, 1)
-	require.Equal(t, "https://image-upstream.example/v1/responses", upstream.requests[0].URL.String())
-	require.Equal(t, "generate", gjson.GetBytes(upstream.bodies[0], "tools.0.action").String())
-	require.Equal(t, "data:image/png;base64,cmVmZXJlbmNlLWltYWdl", gjson.GetBytes(upstream.bodies[0], "input.0.content.1.image_url").String())
+	require.Equal(t, "https://image-upstream.example/v1/images/generations", upstream.requests[0].URL.String())
+	require.Equal(t, "data:image/png;base64,cmVmZXJlbmNlLWltYWdl", gjson.GetBytes(upstream.bodies[0], "image.0").String())
 	require.Equal(t, http.StatusOK, rec.Code)
-	require.Equal(t, "responses bridge first", gjson.Get(rec.Body.String(), "data.0.revised_prompt").String())
+	require.Equal(t, "native generation first", gjson.Get(rec.Body.String(), "data.0.revised_prompt").String())
 }
 
 func TestOpenAIImagesPreferredCompatibleRouteConfirmedResponsesOverridesCachedGenerationRoute(t *testing.T) {

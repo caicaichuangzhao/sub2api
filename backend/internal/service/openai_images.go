@@ -722,6 +722,15 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKeyCompatibleAggregate(
 	}
 
 	preferredRoute, hasPreferredRoute := s.openAIImagesPreferredCompatibleRoute(account)
+	// A generations request carrying an image is intentionally sent to the
+	// provider's native generations endpoint first. The request contract uses
+	// this endpoint for both text-to-image and image-conditioned generation;
+	// Responses remains a compatibility fallback only when the native protocol
+	// is rejected by the upstream.
+	if parsed.Endpoint == openAIImagesGenerationsEndpoint && hasOpenAIImagesInput(parsed) {
+		preferredRoute = openAIImagesCompatibleRouteGenerationsJSON
+		hasPreferredRoute = true
+	}
 	if hasPreferredRoute {
 		for index := range attempts {
 			if attempts[index].route != preferredRoute {
