@@ -17,13 +17,44 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func TestNormalizeOpenAIImageBase64DimensionsCropsAndScalesToExactSize(t *testing.T) {
+func TestNormalizeOpenAIImageBase64DimensionsFitsWithoutCropping(t *testing.T) {
 	encoded := encodeOpenAIImageDimensionsTestPNG(t, 941, 1672)
 
 	normalized, format, ok := normalizeOpenAIImageBase64Dimensions(encoded, "png", "1088x1440")
 	require.True(t, ok)
 	require.Equal(t, "png", format)
 	requireOpenAIImageDimensions(t, normalized, 1088, 1440)
+}
+
+func TestNormalizeOpenAIImageBase64DimensionsPreservesTopAndBottomEdges(t *testing.T) {
+	img := image.NewNRGBA(image.Rect(0, 0, 100, 200))
+	for y := 0; y < 200; y++ {
+		fill := color.NRGBA{G: 255, A: 255}
+		if y < 20 {
+			fill = color.NRGBA{R: 255, A: 255}
+		} else if y >= 180 {
+			fill = color.NRGBA{B: 255, A: 255}
+		}
+		for x := 0; x < 100; x++ {
+			img.SetNRGBA(x, y, fill)
+		}
+	}
+	var source bytes.Buffer
+	require.NoError(t, png.Encode(&source, img))
+
+	normalized, _, ok := normalizeOpenAIImageBase64Dimensions(
+		base64.StdEncoding.EncodeToString(source.Bytes()),
+		"png",
+		"200x200",
+	)
+	require.True(t, ok)
+	raw, err := base64.StdEncoding.DecodeString(normalized)
+	require.NoError(t, err)
+	result, err := png.Decode(bytes.NewReader(raw))
+	require.NoError(t, err)
+
+	require.Equal(t, color.NRGBA{R: 255, A: 255}, color.NRGBAModel.Convert(result.At(100, 0)))
+	require.Equal(t, color.NRGBA{B: 255, A: 255}, color.NRGBAModel.Convert(result.At(100, 199)))
 }
 
 func TestNormalizeOpenAIImageBase64KeepsRequiredPadding(t *testing.T) {

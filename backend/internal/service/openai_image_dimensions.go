@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"image"
+	"image/color"
 	stddraw "image/draw"
 	"image/jpeg"
 	"image/png"
@@ -78,9 +79,10 @@ func normalizeOpenAIImageBase64Dimensions(encoded, outputFormat, requestedSize s
 		return encoded, outputFormat, false
 	}
 
-	crop := centeredOpenAIImageCrop(src.Bounds(), targetWidth, targetHeight)
 	dst := image.NewNRGBA(image.Rect(0, 0, targetWidth, targetHeight))
-	xdraw.CatmullRom.Scale(dst, dst.Bounds(), src, crop, stddraw.Src, nil)
+	stddraw.Draw(dst, dst.Bounds(), image.NewUniform(openAIImagePaddingColor(src)), image.Point{}, stddraw.Src)
+	fit := fitOpenAIImageBounds(src.Bounds(), targetWidth, targetHeight)
+	xdraw.CatmullRom.Scale(dst, fit, src, src.Bounds(), stddraw.Src, nil)
 
 	var out bytes.Buffer
 	switch format {
@@ -117,20 +119,55 @@ func normalizeOpenAIImageResizeFormat(outputFormat, decodedFormat string) string
 	}
 }
 
-func centeredOpenAIImageCrop(bounds image.Rectangle, targetWidth, targetHeight int) image.Rectangle {
+func fitOpenAIImageBounds(bounds image.Rectangle, targetWidth, targetHeight int) image.Rectangle {
 	sourceWidth := bounds.Dx()
 	sourceHeight := bounds.Dy()
-	crop := bounds
+	fitWidth := targetWidth
+	fitHeight := targetHeight
 	if int64(sourceWidth)*int64(targetHeight) > int64(targetWidth)*int64(sourceHeight) {
-		cropWidth := max(1, int(int64(sourceHeight)*int64(targetWidth)/int64(targetHeight)))
-		crop.Min.X = bounds.Min.X + (sourceWidth-cropWidth)/2
-		crop.Max.X = crop.Min.X + cropWidth
+		fitHeight = max(1, int(int64(targetWidth)*int64(sourceHeight)/int64(sourceWidth)))
 	} else if int64(sourceWidth)*int64(targetHeight) < int64(targetWidth)*int64(sourceHeight) {
-		cropHeight := max(1, int(int64(sourceWidth)*int64(targetHeight)/int64(targetWidth)))
-		crop.Min.Y = bounds.Min.Y + (sourceHeight-cropHeight)/2
-		crop.Max.Y = crop.Min.Y + cropHeight
+		fitWidth = max(1, int(int64(targetHeight)*int64(sourceWidth)/int64(sourceHeight)))
 	}
-	return crop
+	left := (targetWidth - fitWidth) / 2
+	top := (targetHeight - fitHeight) / 2
+	return image.Rect(left, top, left+fitWidth, top+fitHeight)
+}
+
+func openAIImagePaddingColor(src image.Image) color.NRGBA {
+	bounds := src.Bounds()
+	if bounds.Empty() {
+		return color.NRGBA{A: 255}
+	}
+
+	const samplesPerEdge = 16
+	var red, green, blue, count uint64
+	add := func(x, y int) {
+		pixel := color.NRGBAModel.Convert(src.At(x, y)).(color.NRGBA)
+		alpha := uint64(pixel.A)
+		red += (uint64(pixel.R)*alpha + 255*(255-alpha)) / 255
+		green += (uint64(pixel.G)*alpha + 255*(255-alpha)) / 255
+		blue += (uint64(pixel.B)*alpha + 255*(255-alpha)) / 255
+		count++
+	}
+	for index := range samplesPerEdge {
+		x := bounds.Min.X
+		y := bounds.Min.Y
+		if samplesPerEdge > 1 {
+			x += index * (bounds.Dx() - 1) / (samplesPerEdge - 1)
+			y += index * (bounds.Dy() - 1) / (samplesPerEdge - 1)
+		}
+		add(x, bounds.Min.Y)
+		add(x, bounds.Max.Y-1)
+		add(bounds.Min.X, y)
+		add(bounds.Max.X-1, y)
+	}
+	return color.NRGBA{
+		R: uint8(red / count),
+		G: uint8(green / count),
+		B: uint8(blue / count),
+		A: 255,
+	}
 }
 
 func normalizeOpenAIResponsesImageResultDimensions(results []openAIResponsesImageResult, requestedSize string) bool {
