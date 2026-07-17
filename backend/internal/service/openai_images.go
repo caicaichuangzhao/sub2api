@@ -727,6 +727,22 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKeyCompatibleAggregate(
 	}
 
 	preferredRoute, hasPreferredRoute := s.openAIImagesPreferredCompatibleRoute(account)
+	// A generation request with both reference images and an explicit output
+	// size needs the native edit contract. Responses can use the reference as
+	// context while still inheriting its canvas, whereas /images/edits applies
+	// size directly to the upstream image operation.
+	if parsed.Endpoint == openAIImagesGenerationsEndpoint &&
+		hasOpenAIImagesInput(parsed) &&
+		parsed.ExplicitSize &&
+		openai_compat.ResolveResponsesSupport(account.Extra) == openai_compat.ResponsesSupportYes {
+		// For this sized image-to-image case, keep generation-only protocols
+		// last so an endpoint that silently ignores the image cannot win.
+		attempts[0], attempts[2] = attempts[2], attempts[0]
+		attempts[1], attempts[3] = attempts[3], attempts[1]
+		attempts[2], attempts[3] = attempts[3], attempts[2]
+		preferredRoute = openAIImagesCompatibleRouteJSONEdits
+		hasPreferredRoute = true
+	}
 	if hasPreferredRoute {
 		for index := range attempts {
 			if attempts[index].route != preferredRoute {

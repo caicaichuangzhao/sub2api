@@ -2360,7 +2360,7 @@ func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationAggregateUsesVa
 	require.Equal(t, "used reference image", gjson.Get(rec.Body.String(), "data.0.revised_prompt").String())
 }
 
-func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationWithInputImagePrefersConfirmedResponsesBridge(t *testing.T) {
+func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationWithInputImageAndSizePrefersJSONEdit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{
 		"model":"gpt-image-2",
@@ -2380,13 +2380,10 @@ func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationWithInputImageP
 		resp: &http.Response{
 			StatusCode: http.StatusOK,
 			Header: http.Header{
-				"Content-Type": []string{"text/event-stream"},
-				"X-Request-Id": []string{"req_img_confirmed_responses"},
+				"Content-Type": []string{"application/json"},
+				"X-Request-Id": []string{"req_img_explicit_size_json_edit"},
 			},
-			Body: io.NopCloser(strings.NewReader(
-				"data: {\"type\":\"response.completed\",\"response\":{\"created_at\":1710000015,\"usage\":{\"input_tokens\":120,\"input_tokens_details\":{\"image_tokens\":100,\"text_tokens\":20},\"output_tokens\":11,\"output_tokens_details\":{\"image_tokens\":11}},\"tool_usage\":{\"image_gen\":{\"images\":1}},\"output\":[{\"type\":\"image_generation_call\",\"result\":\"bmF0aXZlLWZpcnN0\",\"revised_prompt\":\"responses reference\",\"output_format\":\"png\"}]}}\n\n" +
-					"data: [DONE]\n\n",
-			)),
+			Body: io.NopCloser(strings.NewReader(`{"created":1710000015,"data":[{"b64_json":"bmF0aXZlLWVkaXQ=","revised_prompt":"native edit reference","output_format":"png"}],"usage":{"input_tokens":120,"input_tokens_details":{"image_tokens":100,"text_tokens":20},"output_tokens":11}}`)),
 		},
 	}
 	svc := &OpenAIGatewayService{
@@ -2415,14 +2412,15 @@ func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationWithInputImageP
 	require.NotNil(t, result)
 	require.Equal(t, 100, result.Usage.ImageInputTokens)
 	require.Len(t, upstream.requests, 1)
-	require.Equal(t, "https://image-upstream.example/v1/responses", upstream.requests[0].URL.String())
-	require.Equal(t, "text/event-stream", upstream.requests[0].Header.Get("Accept"))
-	require.Equal(t, openAIImagesResponsesMainModel, gjson.GetBytes(upstream.bodies[0], "model").String())
-	require.Equal(t, "generate", gjson.GetBytes(upstream.bodies[0], "tools.0.action").String())
-	require.Equal(t, "1088x1440", gjson.GetBytes(upstream.bodies[0], "tools.0.size").String())
-	require.Equal(t, "data:image/png;base64,cmVmZXJlbmNlLWltYWdl", gjson.GetBytes(upstream.bodies[0], "input.0.content.1.image_url").String())
+	require.Equal(t, "https://image-upstream.example/v1/images/edits", upstream.requests[0].URL.String())
+	require.Equal(t, "application/json", upstream.requests[0].Header.Get("Content-Type"))
+	require.Equal(t, "gpt-image-2", gjson.GetBytes(upstream.bodies[0], "model").String())
+	require.Equal(t, "1088x1440", gjson.GetBytes(upstream.bodies[0], "size").String())
+	require.Equal(t, "data:image/png;base64,cmVmZXJlbmNlLWltYWdl", gjson.GetBytes(upstream.bodies[0], "images.0.image_url").String())
+	require.False(t, gjson.GetBytes(upstream.bodies[0], "image").Exists())
+	require.False(t, gjson.GetBytes(upstream.bodies[0], "tools").Exists())
 	require.Equal(t, http.StatusOK, rec.Code)
-	require.Equal(t, "responses reference", gjson.Get(rec.Body.String(), "data.0.revised_prompt").String())
+	require.Equal(t, "native edit reference", gjson.Get(rec.Body.String(), "data.0.revised_prompt").String())
 }
 
 func TestOpenAIImagesPreferredCompatibleRouteConfirmedResponsesOverridesCachedGenerationRoute(t *testing.T) {
