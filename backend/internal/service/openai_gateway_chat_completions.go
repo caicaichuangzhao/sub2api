@@ -84,6 +84,12 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		}
 		return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 	}
+
+	// 入口分流：APIKey 账号 + 强制或已探测确认上游不支持 Responses，走 CC 直转。
+	// 自动模式下标记缺失（未探测）按"现状即证据"原则继续走下方原 Responses 转换路径。
+	if account.Type == AccountTypeAPIKey && !openai_compat.ShouldUseResponsesAPI(account.Extra) {
+		return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
+	}
 	startTime := time.Now()
 
 	// 1. Parse Chat Completions request
@@ -93,35 +99,11 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	}
 	originalModel := chatReq.Model
 	clientStream := chatReq.Stream
-	chatImageIntent := apicompat.IsChatCompletionsImageGenerationRequest(&chatReq)
-
-	// 入口分流：APIKey 账号 + 强制或已探测确认上游不支持 Responses，普通 CC 走直转。
-	// 图像兼容入口必须保留在 Responses image_generation 工具链里，否则无法支持
-	// /v1/chat/completions 参考图生图这类聚合接口形态。
-	if account.Type == AccountTypeAPIKey && !chatImageIntent && !openai_compat.ShouldUseResponsesAPI(account.Extra) {
-		return s.forwardAsRawChatCompletions(ctx, c, account, body, defaultMappedModel)
-	}
 
 	// 2. Resolve model mapping early so compat prompt_cache_key injection can
 	// derive a stable seed from the final upstream model family.
 	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
-	imageBillingModel := ""
-	imageSizeTier := ""
-	imageInputSize := ""
-	if chatImageIntent {
-		imageBillingModel = apicompat.ChatCompletionsImageGenerationModel(&chatReq)
-		billingModel = imageBillingModel
-	}
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
-	if chatImageIntent {
-		upstreamModel = normalizeOpenAIModelForUpstream(account, openAIImagesResponsesMainModel)
-		if cfg, cfgErr := resolveOpenAIResponsesImageBillingConfigDetailedFromBody(body, imageBillingModel); cfgErr == nil {
-			imageBillingModel = strings.TrimSpace(cfg.Model)
-			imageSizeTier = cfg.SizeTier
-			imageInputSize = cfg.InputSize
-			billingModel = imageBillingModel
-		}
-	}
 
 	promptCacheKey = strings.TrimSpace(promptCacheKey)
 	compatPromptCacheInjected := false
@@ -189,14 +171,6 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		responsesBody, err = json.Marshal(responsesReq)
 		if err != nil {
 			return nil, fmt.Errorf("marshal responses request: %w", err)
-		}
-		if chatImageIntent {
-			if cfg, cfgErr := resolveOpenAIResponsesImageBillingConfigDetailedFromBody(responsesBody, imageBillingModel); cfgErr == nil {
-				imageBillingModel = strings.TrimSpace(cfg.Model)
-				imageSizeTier = cfg.SizeTier
-				imageInputSize = cfg.InputSize
-				billingModel = imageBillingModel
-			}
 		}
 	}
 
@@ -310,7 +284,6 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 			return s.ForwardAsChatCompletions(markAgentIdentityTaskRecoveryTried(ctx), c, account, body, promptCacheKey, defaultMappedModel)
 		}
 		if account.Type == AccountTypeAPIKey &&
-			!chatImageIntent &&
 			openai_compat.ResolveResponsesSupport(account.Extra) == openai_compat.ResponsesSupportUnknown &&
 			!isResponsesEndpointSupportedByStatus(resp.StatusCode) {
 			logger.L().Info("openai chat_completions: /responses unsupported, falling back to raw chat completions",
@@ -346,11 +319,6 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 
 	// Propagate ServiceTier and ReasoningEffort to result for billing
 	if handleErr == nil && result != nil {
-		if chatImageIntent && result.ImageCount > 0 {
-			result.BillingModel = imageBillingModel
-			result.ImageSize = imageSizeTier
-			result.ImageInputSize = imageInputSize
-		}
 		if responsesReq.ServiceTier != "" {
 			st := responsesReq.ServiceTier
 			result.ServiceTier = &st
@@ -493,10 +461,6 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	// accumulated delta events so the client receives the full content.
 	acc.SupplementResponseOutput(finalResponse)
 
-	finalResponseBody, _ := json.Marshal(finalResponse)
-	imageCounter := newOpenAIImageOutputCounter()
-	imageCounter.AddJSONResponse(finalResponseBody)
-
 	chatResp := apicompat.ResponsesToChatCompletions(finalResponse, originalModel)
 	if isChatCompletionsResponseShortRefusal(chatResp) {
 		return nil, newOpenAIShortRefusalFailoverError(c, account, requestID)
@@ -513,15 +477,13 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	c.JSON(http.StatusOK, chatResp)
 
 	return &OpenAIForwardResult{
-		RequestID:        requestID,
-		Usage:            usage,
-		Model:            originalModel,
-		BillingModel:     billingModel,
-		UpstreamModel:    upstreamModel,
-		Stream:           false,
-		Duration:         time.Since(startTime),
-		ImageCount:       imageCounter.Count(),
-		ImageOutputSizes: imageCounter.Sizes(),
+		RequestID:     requestID,
+		Usage:         usage,
+		Model:         originalModel,
+		BillingModel:  billingModel,
+		UpstreamModel: upstreamModel,
+		Stream:        false,
+		Duration:      time.Since(startTime),
 	}, nil
 }
 
@@ -574,7 +536,6 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	clientOutputStarted := false
 	pendingSSE := make([]string, 0, 4)
 	refusalDetector := newOpenAIChatSilentRefusalDetector(requestBodyLen)
-	imageCounter := newOpenAIImageOutputCounter()
 	var streamFailoverErr *UpstreamFailoverError
 	var streamNonFailoverErr error
 
@@ -596,16 +557,14 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 
 	resultWithUsage := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
-			RequestID:        requestID,
-			Usage:            usage,
-			Model:            originalModel,
-			BillingModel:     billingModel,
-			UpstreamModel:    upstreamModel,
-			Stream:           true,
-			Duration:         time.Since(startTime),
-			FirstTokenMs:     firstTokenMs,
-			ImageCount:       imageCounter.Count(),
-			ImageOutputSizes: imageCounter.Sizes(),
+			RequestID:     requestID,
+			Usage:         usage,
+			Model:         originalModel,
+			BillingModel:  billingModel,
+			UpstreamModel: upstreamModel,
+			Stream:        true,
+			Duration:      time.Since(startTime),
+			FirstTokenMs:  firstTokenMs,
 		}
 	}
 
@@ -625,7 +584,6 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			return false
 		}
 		refusalDetector.ObservePayload([]byte(payload))
-		imageCounter.AddSSEData([]byte(payload))
 
 		isTerminalEvent := isOpenAICompatResponsesTerminalEvent(event.Type)
 		if isTerminalEvent {

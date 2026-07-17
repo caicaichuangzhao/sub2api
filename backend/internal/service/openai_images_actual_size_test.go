@@ -39,53 +39,29 @@ func TestDetectOpenAIImageResultSize(t *testing.T) {
 	require.Empty(t, detectOpenAIImageResultSize("not-image-data"))
 }
 
-func TestOpenAIGatewayServiceForwardImages_OAuthPreservesNativeOutputDimensions(t *testing.T) {
-	run := runOpenAIOAuthImageActualSizeTest(t, false, "3840x2160")
+func TestOpenAIGatewayServiceForwardImages_OAuthUsesDecodedOutputDimensions(t *testing.T) {
+	run := runOpenAIOAuthImageActualSizeTest(t, false)
 
 	require.Equal(t, "3840x2160", gjson.GetBytes(run.upstream.lastBody, "tools.0.size").String())
 	require.Equal(t, "low", gjson.GetBytes(run.upstream.lastBody, "tools.0.quality").String())
 	require.Equal(t, "1672x941", gjson.Get(run.recorder.Body.String(), "size").String())
 	require.Equal(t, "auto", gjson.Get(run.recorder.Body.String(), "quality").String())
-	require.Equal(t, "1672x941", detectOpenAIImageResultSize(gjson.Get(run.recorder.Body.String(), "data.0.b64_json").String()))
 	require.Equal(t, []string{"1672x941"}, run.result.ImageOutputSizes)
 
 	ApplyOpenAIImageBillingResolution(run.result)
-	require.Equal(t, ImageBillingSize1K, run.result.ImageSize)
+	require.Equal(t, ImageBillingSize2K, run.result.ImageSize)
 	require.Equal(t, "1672x941", run.result.ImageOutputSize)
 	require.Equal(t, ImageSizeSourceOutput, run.result.ImageSizeSource)
 }
 
-func TestOpenAIGatewayServiceForwardImages_OAuthStreamingPreservesNativeOutputDimensions(t *testing.T) {
-	run := runOpenAIOAuthImageActualSizeTest(t, true, "3840x2160")
+func TestOpenAIGatewayServiceForwardImages_OAuthStreamingUsesDecodedOutputDimensions(t *testing.T) {
+	run := runOpenAIOAuthImageActualSizeTest(t, true)
 
 	events := parseOpenAIImageTestSSEEvents(run.recorder.Body.String())
 	completed, ok := findOpenAIImageTestSSEEvent(events, "image_generation.completed")
 	require.True(t, ok)
 	require.Equal(t, "1672x941", gjson.Get(completed.Data, "size").String())
 	require.Equal(t, "auto", gjson.Get(completed.Data, "quality").String())
-	require.Equal(t, "1672x941", detectOpenAIImageResultSize(gjson.Get(completed.Data, "b64_json").String()))
-	require.Equal(t, []string{"1672x941"}, run.result.ImageOutputSizes)
-}
-
-func TestOpenAIGatewayServiceForwardImages_OAuthAutoUsesDecodedOutputDimensions(t *testing.T) {
-	run := runOpenAIOAuthImageActualSizeTest(t, false, "auto")
-
-	require.Equal(t, "1672x941", gjson.Get(run.recorder.Body.String(), "size").String())
-	require.Equal(t, []string{"1672x941"}, run.result.ImageOutputSizes)
-
-	ApplyOpenAIImageBillingResolution(run.result)
-	require.Equal(t, ImageBillingSize1K, run.result.ImageSize)
-	require.Equal(t, "1672x941", run.result.ImageOutputSize)
-	require.Equal(t, ImageSizeSourceOutput, run.result.ImageSizeSource)
-}
-
-func TestOpenAIGatewayServiceForwardImages_OAuthStreamingAutoUsesDecodedOutputDimensions(t *testing.T) {
-	run := runOpenAIOAuthImageActualSizeTest(t, true, "auto")
-
-	events := parseOpenAIImageTestSSEEvents(run.recorder.Body.String())
-	completed, ok := findOpenAIImageTestSSEEvent(events, "image_generation.completed")
-	require.True(t, ok)
-	require.Equal(t, "1672x941", gjson.Get(completed.Data, "size").String())
 	require.Equal(t, []string{"1672x941"}, run.result.ImageOutputSizes)
 }
 
@@ -95,10 +71,10 @@ type openAIOAuthImageActualSizeTestRun struct {
 	upstream *httpUpstreamRecorder
 }
 
-func runOpenAIOAuthImageActualSizeTest(t *testing.T, stream bool, requestedSize string) openAIOAuthImageActualSizeTestRun {
+func runOpenAIOAuthImageActualSizeTest(t *testing.T, stream bool) openAIOAuthImageActualSizeTestRun {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
-	body := []byte(fmt.Sprintf(`{"model":"gpt-image-2","prompt":"draw a test chart","size":%q,"quality":"low","output_format":"png","stream":%t}`, requestedSize, stream))
+	body := []byte(fmt.Sprintf(`{"model":"gpt-image-2","prompt":"draw a test chart","size":"3840x2160","quality":"low","output_format":"png","stream":%t}`, stream))
 	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

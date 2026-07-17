@@ -92,14 +92,6 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 
 	// 解析渠道级模型映射
 	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
-	mappedReqModel := reqModel
-	if channelMapping.Mapped {
-		mappedReqModel = channelMapping.MappedModel
-	}
-	if (service.IsImageGenerationIntent("/v1/chat/completions", reqModel, body) || service.IsImageGenerationIntent("/v1/chat/completions", mappedReqModel, nil)) && !service.GroupAllowsImageGeneration(apiKey.Group) {
-		h.chatCompletionsErrorResponse(c, http.StatusForbidden, "permission_error", service.ImageGenerationPermissionMessage())
-		return
-	}
 
 	// Claude Code only restriction
 	if apiKey.Group != nil && apiKey.Group.ClaudeCodeOnly {

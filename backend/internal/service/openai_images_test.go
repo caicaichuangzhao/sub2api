@@ -3,21 +3,17 @@ package service
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/gin-gonic/gin"
 	"github.com/imroc/req/v3"
 	"github.com/stretchr/testify/require"
@@ -91,7 +87,7 @@ func TestOpenAIGatewayServiceParseOpenAIImagesRequest_MultipartEdit(t *testing.T
 	require.Equal(t, "gpt-image-2", parsed.Model)
 	require.Equal(t, "replace background", parsed.Prompt)
 	require.Equal(t, "1536x1024", parsed.Size)
-	require.Equal(t, "1K", parsed.SizeTier)
+	require.Equal(t, "2K", parsed.SizeTier)
 	require.Len(t, parsed.Uploads, 1)
 	require.Equal(t, OpenAIImagesCapabilityNative, parsed.RequiredCapability)
 }
@@ -149,19 +145,16 @@ func TestOpenAIGatewayServiceParseOpenAIImagesRequest_NormalizesOfficialAndCusto
 		wantTier string
 	}{
 		{size: "1024x1024", wantTier: "1K"},
-		{size: "1536x1024", wantTier: "1K"},
-		{size: "1024x1536", wantTier: "1K"},
-		{size: "1088x1440", wantTier: "1K"},
-		{size: "2000x1000", wantTier: "1K"},
+		{size: "1536x1024", wantTier: "2K"},
+		{size: "1024x1536", wantTier: "2K"},
 		{size: "2048x2048", wantTier: "2K"},
 		{size: "2048x1152", wantTier: "2K"},
 		{size: "3840x2160", wantTier: "4K"},
 		{size: "2160x3840", wantTier: "4K"},
 		{size: "1024X768", wantTier: "1K"},
-		{size: "1280x768", wantTier: "1K"},
-		{size: "2560x1440", wantTier: "2K"},
-		{size: "2560x1600", wantTier: "2K"},
-		{size: "3072x4096", wantTier: "4K"},
+		{size: "1280x768", wantTier: "2K"},
+		{size: "2560x1440", wantTier: "4K"},
+		{size: "2560x1600", wantTier: "4K"},
 		{size: "auto", wantTier: "2K"},
 	}
 
@@ -193,8 +186,8 @@ func TestOpenAIGatewayServiceParseOpenAIImagesRequest_UnknownSizesDoNotBlockPass
 		wantTier string
 	}{
 		{size: "2048x1153", wantTier: "2K"},
-		{size: "4096x1024", wantTier: "2K"},
-		{size: "3840x1024", wantTier: "2K"},
+		{size: "4096x1024", wantTier: "4K"},
+		{size: "3840x1024", wantTier: "4K"},
 		{size: "512x512", wantTier: "1K"},
 		{size: "invalid", wantTier: "2K"},
 		{size: "999999999999999999999999999x2", wantTier: "2K"},
@@ -395,198 +388,6 @@ func TestOpenAIGatewayServiceParseOpenAIImagesRequest_JSONEditURLs(t *testing.T)
 	require.Equal(t, 2, *parsed.PartialImages)
 	require.True(t, parsed.HasMask)
 	require.Equal(t, OpenAIImagesCapabilityNative, parsed.RequiredCapability)
-}
-
-func TestOpenAIGatewayServiceParseOpenAIImagesRequest_JSONEditTopLevelImageURL(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	body := []byte(`{
-		"model":"gpt-image-2",
-		"prompt":"replace the background",
-		"image_url":"https://example.com/source.png",
-		"response_format":"url"
-	}`)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/images/edits", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = req
-
-	svc := &OpenAIGatewayService{}
-	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
-	require.NoError(t, err)
-	require.NotNil(t, parsed)
-	require.Equal(t, []string{"https://example.com/source.png"}, parsed.InputImageURLs)
-	require.Equal(t, OpenAIImagesCapabilityNative, parsed.RequiredCapability)
-}
-
-func TestBuildOpenAIImagesAPIKeyJSONEditBody_InlinesRemoteImages(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	sourceBytes := []byte("source-image-bytes")
-	maskBytes := []byte("mask-image-bytes")
-	originalDownloader := openAIImagesInputImageDownloader
-	openAIImagesInputImageDownloader = func(ctx context.Context, rawURL string, index int, mask bool) (OpenAIImagesUpload, error) {
-		switch rawURL {
-		case "https://example.com/source.png":
-			return newOpenAIImagesUploadFromBytes(sourceBytes, "image/png", "source.png"), nil
-		case "https://example.com/mask.png":
-			return newOpenAIImagesUploadFromBytes(maskBytes, "image/png", "mask.png"), nil
-		default:
-			return OpenAIImagesUpload{}, fmt.Errorf("unexpected url: %s", rawURL)
-		}
-	}
-	t.Cleanup(func() { openAIImagesInputImageDownloader = originalDownloader })
-
-	parsed := &OpenAIImagesRequest{
-		Endpoint:       openAIImagesGenerationsEndpoint,
-		Model:          "gpt-image-2",
-		Prompt:         "replace background",
-		InputImageURLs: []string{"https://example.com/source.png"},
-		MaskImageURL:   "https://example.com/mask.png",
-		ResponseFormat: "url",
-	}
-
-	body, err := buildOpenAIImagesAPIKeyJSONEditBody(context.Background(), parsed)
-	require.NoError(t, err)
-
-	wantSource := "data:image/png;base64," + base64.StdEncoding.EncodeToString(sourceBytes)
-	wantMask := "data:image/png;base64," + base64.StdEncoding.EncodeToString(maskBytes)
-	require.Equal(t, wantSource, gjson.GetBytes(body, "images.0.image_url").String())
-	require.Equal(t, wantMask, gjson.GetBytes(body, "mask.image_url").String())
-	require.NotContains(t, string(body), "https://example.com/")
-}
-
-func TestBuildOpenAIImagesAPIKeyMultipartEditBodyPreservesMultipleInputImageOrder(t *testing.T) {
-	parsed := &OpenAIImagesRequest{
-		Endpoint:       openAIImagesGenerationsEndpoint,
-		Model:          "gpt-image-2",
-		Prompt:         "combine the references",
-		InputImageURLs: []string{"data:image/png;base64,b25l", "data:image/png;base64,dHdv"},
-	}
-
-	body, contentType, err := buildOpenAIImagesAPIKeyMultipartEditBody(context.Background(), parsed)
-	require.NoError(t, err)
-	mediaType, params, err := mime.ParseMediaType(contentType)
-	require.NoError(t, err)
-	require.Equal(t, "multipart/form-data", mediaType)
-
-	reader := multipart.NewReader(bytes.NewReader(body), params["boundary"])
-	var imageBodies [][]byte
-	for {
-		part, err := reader.NextPart()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		require.NoError(t, err)
-		if part.FileName() == "" {
-			continue
-		}
-		require.Equal(t, "image[]", part.FormName())
-		imageBody, err := io.ReadAll(part)
-		require.NoError(t, err)
-		imageBodies = append(imageBodies, imageBody)
-	}
-
-	require.Equal(t, [][]byte{[]byte("one"), []byte("two")}, imageBodies)
-}
-
-func TestBuildOpenAIImagesAPIKeyGenerationInputBody_InlinesRemoteImages(t *testing.T) {
-	sourceBytes := []byte("source-image-bytes")
-	originalDownloader := openAIImagesInputImageDownloader
-	openAIImagesInputImageDownloader = func(ctx context.Context, rawURL string, index int, mask bool) (OpenAIImagesUpload, error) {
-		require.Equal(t, "https://example.com/source.png", rawURL)
-		require.Equal(t, 0, index)
-		require.False(t, mask)
-		return newOpenAIImagesUploadFromBytes(sourceBytes, "image/png", "source.png"), nil
-	}
-	t.Cleanup(func() { openAIImagesInputImageDownloader = originalDownloader })
-
-	parsed := &OpenAIImagesRequest{
-		Endpoint:       openAIImagesGenerationsEndpoint,
-		Model:          "gpt-image-2",
-		Prompt:         "make a cover",
-		Size:           "1088x1440",
-		ResponseFormat: "url",
-		InputImageURLs: []string{"https://example.com/source.png"},
-	}
-
-	body, err := buildOpenAIImagesAPIKeyGenerationInputBody(context.Background(), parsed)
-	require.NoError(t, err)
-
-	wantSource := "data:image/png;base64," + base64.StdEncoding.EncodeToString(sourceBytes)
-	require.Equal(t, wantSource, gjson.GetBytes(body, "image.0").String())
-	require.Equal(t, "gpt-image-2", gjson.GetBytes(body, "model").String())
-	require.Equal(t, "make a cover", gjson.GetBytes(body, "prompt").String())
-	require.Equal(t, "1088x1440", gjson.GetBytes(body, "size").String())
-	require.Equal(t, "url", gjson.GetBytes(body, "response_format").String())
-	require.NotContains(t, string(body), "https://example.com/")
-}
-
-func TestOpenAIGatewayServiceParseOpenAIImagesRequest_JSONGenerationImageCompat(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	body := []byte(`{
-		"model":"gpt-image-2",
-		"prompt":"remove text",
-		"image":"QUJD",
-		"response_format":"url"
-	}`)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = req
-
-	svc := &OpenAIGatewayService{}
-	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
-	require.NoError(t, err)
-	require.NotNil(t, parsed)
-	require.False(t, parsed.IsEdits())
-	require.Equal(t, []string{"data:image/png;base64,QUJD"}, parsed.InputImageURLs)
-	require.Equal(t, OpenAIImagesCapabilityNative, parsed.RequiredCapability)
-}
-
-func TestOpenAIGatewayServiceParseOpenAIImagesRequest_JSONGenerationTopLevelImageArrayCompat(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	body := []byte(`{
-		"model":"gpt-image-2",
-		"prompt":"make a portrait book cover",
-		"response_format":"url",
-		"size":"1088x1440",
-		"image":["https://example.com/source.jpg"]
-	}`)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = req
-
-	svc := &OpenAIGatewayService{}
-	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
-	require.NoError(t, err)
-	require.NotNil(t, parsed)
-	require.False(t, parsed.IsEdits())
-	require.Equal(t, []string{"https://example.com/source.jpg"}, parsed.InputImageURLs)
-	require.Equal(t, "url", parsed.ResponseFormat)
-	require.Equal(t, "1088x1440", parsed.Size)
-	require.Equal(t, OpenAIImagesCapabilityNative, parsed.RequiredCapability)
-
-	originalDownloader := openAIImagesInputImageDownloader
-	openAIImagesInputImageDownloader = func(ctx context.Context, rawURL string, index int, mask bool) (OpenAIImagesUpload, error) {
-		require.Equal(t, "https://example.com/source.jpg", rawURL)
-		require.Equal(t, 0, index)
-		require.False(t, mask)
-		return newOpenAIImagesUploadFromBytes([]byte("source-image-bytes"), "image/jpeg", "source.jpg"), nil
-	}
-	t.Cleanup(func() { openAIImagesInputImageDownloader = originalDownloader })
-
-	upstreamBody, err := buildOpenAIImagesResponsesRequest(context.Background(), parsed, "gpt-image-2")
-	require.NoError(t, err)
-	require.Equal(t, "generate", gjson.GetBytes(upstreamBody, "tools.0.action").String())
-	require.Equal(t, "1088x1440", gjson.GetBytes(upstreamBody, "tools.0.size").String())
-	require.Equal(t, "data:image/jpeg;base64,c291cmNlLWltYWdlLWJ5dGVz", gjson.GetBytes(upstreamBody, "input.0.content.1.image_url").String())
 }
 
 func TestCollectOpenAIImagePointers_RecognizesDirectAssets(t *testing.T) {
@@ -988,108 +789,6 @@ func TestOpenAIGatewayServiceForwardImages_OAuthPassesNAndReturnsAllImages(t *te
 	require.Equal(t, "draw a cat 3", gjson.Get(rec.Body.String(), "data.2.revised_prompt").String())
 }
 
-func TestOpenAIGatewayServiceForwardImages_OAuthURLFormatReturnsDownloadURL(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat","response_format":"url"}`)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Host = "api.example.com"
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = req
-
-	svc := &OpenAIGatewayService{}
-	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
-	require.NoError(t, err)
-
-	svc.httpUpstream = &httpUpstreamRecorder{
-		resp: &http.Response{
-			StatusCode: http.StatusOK,
-			Header: http.Header{
-				"Content-Type": []string{"text/event-stream"},
-				"X-Request-Id": []string{"req_img_url"},
-			},
-			Body: io.NopCloser(strings.NewReader(
-				"data: {\"type\":\"response.completed\",\"response\":{\"created_at\":1710000000,\"tool_usage\":{\"image_gen\":{\"images\":1}},\"output\":[{\"type\":\"image_generation_call\",\"result\":\"aGVsbG8=\",\"output_format\":\"png\",\"size\":\"1024x1024\"}]}}\n\n" +
-					"data: [DONE]\n\n",
-			)),
-		},
-	}
-
-	account := &Account{
-		ID:       1,
-		Name:     "openai-oauth",
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeOAuth,
-		Credentials: map[string]any{
-			"access_token": "token-123",
-		},
-	}
-
-	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Equal(t, http.StatusOK, rec.Code)
-	require.Equal(t, "application/json; charset=utf-8", rec.Header().Get("Content-Type"))
-	require.Empty(t, gjson.Get(rec.Body.String(), "data.0.b64_json").String())
-	url := gjson.Get(rec.Body.String(), "data.0.url").String()
-	require.True(t, strings.HasPrefix(url, "http://api.example.com/api/v1/generated-images/"), url)
-	require.NotContains(t, url, "base64")
-}
-
-func TestOpenAIGatewayServiceForwardImages_OAuthURLFormatUsesPublicBaseFallback(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat","response_format":"url"}`)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Host = "127.0.0.1"
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = req
-
-	settingSvc := NewSettingService(&memorySettingRepo{
-		values: map[string]string{
-			SettingKeyAPIBaseURL: "https://sub2.70api.top/v1",
-		},
-	}, &config.Config{})
-	svc := &OpenAIGatewayService{settingService: settingSvc}
-	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
-	require.NoError(t, err)
-
-	svc.httpUpstream = &httpUpstreamRecorder{
-		resp: &http.Response{
-			StatusCode: http.StatusOK,
-			Header: http.Header{
-				"Content-Type": []string{"text/event-stream"},
-				"X-Request-Id": []string{"req_img_url"},
-			},
-			Body: io.NopCloser(strings.NewReader(
-				"data: {\"type\":\"response.completed\",\"response\":{\"created_at\":1710000000,\"tool_usage\":{\"image_gen\":{\"images\":1}},\"output\":[{\"type\":\"image_generation_call\",\"result\":\"aGVsbG8=\",\"output_format\":\"png\",\"size\":\"1024x1024\"}]}}\n\n" +
-					"data: [DONE]\n\n",
-			)),
-		},
-	}
-
-	account := &Account{
-		ID:       1,
-		Name:     "openai-oauth",
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeOAuth,
-		Credentials: map[string]any{
-			"access_token": "token-123",
-		},
-	}
-
-	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	url := gjson.Get(rec.Body.String(), "data.0.url").String()
-	require.True(t, strings.HasPrefix(url, "https://sub2.70api.top/api/v1/generated-images/"), url)
-	require.NotContains(t, url, "127.0.0.1")
-}
-
 func TestParseOpenAIImagesSSEUsageBytes_ToolUsagePrecedenceAndFallback(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	fallback := OpenAIUsage{InputTokens: 3, OutputTokens: 4, ImageOutputTokens: 2}
@@ -1214,6 +913,8 @@ func TestOpenAIGatewayServiceForwardImages_OAuthUpstreamHTTPErrorSurfacesRealErr
 	require.Equal(t, "invalid_request_error", upstreamErr.ErrorType)
 	require.Equal(t, "unknown_parameter", upstreamErr.Code)
 
+	// The client must receive the actual upstream status code and message instead
+	// of a generic 502 "Upstream request failed".
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	require.Equal(t, "invalid_request_error", gjson.Get(rec.Body.String(), "error.type").String())
 	require.Equal(t, "unknown_parameter", gjson.Get(rec.Body.String(), "error.code").String())
@@ -1329,42 +1030,6 @@ func TestOpenAIGatewayServiceForwardImages_OAuthNonStreamServerErrorReturnsFailo
 	require.Equal(t, "failover", events[0].Kind)
 	require.Equal(t, account.ID, events[0].AccountID)
 	require.Equal(t, http.StatusBadGateway, events[0].UpstreamStatusCode)
-}
-
-func TestOpenAIGatewayServiceForwardImages_ResponsesTransportErrorReturnsFailover(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat","response_format":"url","image":["data:image/png;base64,cmVm"]}`)
-	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = req
-
-	svc := &OpenAIGatewayService{
-		cfg:          &config.Config{},
-		httpUpstream: &httpUpstreamRecorder{err: errors.New("http2: client connection lost")},
-	}
-	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
-	require.NoError(t, err)
-	account := &Account{
-		ID:       52,
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Credentials: map[string]any{
-			"api_key":  "test-api-key",
-			"base_url": "https://image-upstream.example/v1",
-		},
-		Extra: map[string]any{
-			openai_compat.ExtraKeyResponsesSupported: true,
-		},
-	}
-
-	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
-	require.Nil(t, result)
-	var failoverErr *UpstreamFailoverError
-	require.ErrorAs(t, err, &failoverErr)
-	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
-	require.Contains(t, string(failoverErr.ResponseBody), "http2: client connection lost")
 }
 
 func TestOpenAIGatewayServiceForwardImages_OAuthStreamServerErrorAfterFlushDoesNotFailover(t *testing.T) {
@@ -1512,1245 +1177,6 @@ func TestOpenAIGatewayServiceForwardImages_APIKeyGenerationUsesConfiguredV1BaseU
 	require.Equal(t, "gpt-image-2", gjson.GetBytes(upstream.lastBody, "model").String())
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, "aGVsbG8=", gjson.Get(rec.Body.String(), "data.0.b64_json").String())
-}
-
-func TestOpenAIGatewayServiceForwardImages_APIKeyURLFormatConvertsB64JSONToGeneratedURL(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat","response_format":"url"}`)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Host = "api.example.com"
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = req
-
-	svc := &OpenAIGatewayService{
-		cfg: &config.Config{},
-		httpUpstream: &httpUpstreamRecorder{
-			resp: &http.Response{
-				StatusCode: http.StatusOK,
-				Header: http.Header{
-					"Content-Type": []string{"application/json"},
-					"X-Request-Id": []string{"req_img_apikey_url"},
-				},
-				Body: io.NopCloser(strings.NewReader(`{"created":1710000007,"data":[{"b64_json":"aGVsbG8=","revised_prompt":"draw a cat","output_format":"png"}]}`)),
-			},
-		},
-	}
-	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
-	require.NoError(t, err)
-
-	account := &Account{
-		ID:       7,
-		Name:     "openai-apikey",
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Credentials: map[string]any{
-			"api_key":  "test-api-key",
-			"base_url": "https://image-upstream.example/v1",
-		},
-	}
-
-	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Equal(t, http.StatusOK, rec.Code)
-	require.Empty(t, gjson.Get(rec.Body.String(), "data.0.b64_json").String())
-	require.Equal(t, "draw a cat", gjson.Get(rec.Body.String(), "data.0.revised_prompt").String())
-	url := gjson.Get(rec.Body.String(), "data.0.url").String()
-	prefix := "http://api.example.com/api/v1/generated-images/"
-	require.True(t, strings.HasPrefix(url, prefix), url)
-	require.NotContains(t, rec.Body.String(), "aGVsbG8=")
-	stored, ok := loadGeneratedImage(strings.TrimPrefix(url, prefix))
-	require.True(t, ok)
-	require.Equal(t, []byte("hello"), stored.Data)
-	require.Equal(t, "image/png", stored.ContentType)
-}
-
-func TestOpenAIGatewayServiceForwardImages_APIKeyURLFormatConvertsDataURLToGeneratedURL(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat","response_format":"url"}`)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Host = "api.example.com"
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = req
-
-	svc := &OpenAIGatewayService{
-		cfg: &config.Config{},
-		httpUpstream: &httpUpstreamRecorder{
-			resp: &http.Response{
-				StatusCode: http.StatusOK,
-				Header: http.Header{
-					"Content-Type": []string{"application/json"},
-					"X-Request-Id": []string{"req_img_apikey_data_url"},
-				},
-				Body: io.NopCloser(strings.NewReader(`{"created":1710000007,"data":[{"url":"data:image/png;base64,aGVsbG8=","revised_prompt":"draw a cat"}]}`)),
-			},
-		},
-	}
-	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
-	require.NoError(t, err)
-
-	account := &Account{
-		ID:       8,
-		Name:     "openai-apikey",
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Credentials: map[string]any{
-			"api_key":  "test-api-key",
-			"base_url": "https://image-upstream.example/v1",
-		},
-	}
-
-	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Equal(t, http.StatusOK, rec.Code)
-	url := gjson.Get(rec.Body.String(), "data.0.url").String()
-	prefix := "http://api.example.com/api/v1/generated-images/"
-	require.True(t, strings.HasPrefix(url, prefix), url)
-	require.NotContains(t, rec.Body.String(), "data:image/png;base64")
-	stored, ok := loadGeneratedImage(strings.TrimPrefix(url, prefix))
-	require.True(t, ok)
-	require.Equal(t, []byte("hello"), stored.Data)
-	require.Equal(t, "image/png", stored.ContentType)
-}
-
-func TestOpenAIGatewayServiceForwardImages_APIKeyGenerationWithInputImageUsesMultipartEdit(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	body := []byte(`{
-		"model":"gpt-image-2",
-		"prompt":"make a portrait book cover in the same anime style",
-		"response_format":"url",
-		"size":"1088x1440",
-		"image":["data:image/png;base64,cmVmZXJlbmNlLWltYWdl"]
-	}`)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Host = "api.example.com"
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = req
-
-	svc := &OpenAIGatewayService{
-		cfg: &config.Config{},
-		httpUpstream: &httpUpstreamRecorder{
-			resp: &http.Response{
-				StatusCode: http.StatusOK,
-				Header: http.Header{
-					"Content-Type": []string{"application/json"},
-					"X-Request-Id": []string{"req_img_apikey_reference"},
-				},
-				Body: io.NopCloser(strings.NewReader(`{"created":1710000012,"data":[{"b64_json":"cmVmLW91dA==","revised_prompt":"make a portrait book cover in the same anime style","output_format":"png"}]}`)),
-			},
-		},
-	}
-	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
-	require.NoError(t, err)
-
-	account := &Account{
-		ID:       9,
-		Name:     "openai-apikey",
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Credentials: map[string]any{
-			"api_key": "test-api-key",
-		},
-	}
-
-	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Equal(t, 1, result.ImageCount)
-	require.Equal(t, "gpt-image-2", result.Model)
-
-	upstream, ok := svc.httpUpstream.(*httpUpstreamRecorder)
-	require.True(t, ok)
-	require.NotNil(t, upstream.lastReq)
-	require.Equal(t, openAIImagesEditsURL, upstream.lastReq.URL.String())
-	require.Equal(t, "Bearer test-api-key", upstream.lastReq.Header.Get("Authorization"))
-	require.Contains(t, upstream.lastReq.Header.Get("Content-Type"), "multipart/form-data")
-	upstreamBody := string(upstream.lastBody)
-	require.Contains(t, upstreamBody, `name="model"`)
-	require.Contains(t, upstreamBody, "gpt-image-2")
-	require.Contains(t, upstreamBody, `name="prompt"`)
-	require.Contains(t, upstreamBody, "make a portrait book cover in the same anime style")
-	require.Contains(t, upstreamBody, `name="size"`)
-	require.Contains(t, upstreamBody, "1088x1440")
-	require.NotContains(t, upstreamBody, `name="response_format"`)
-	require.Contains(t, upstreamBody, `name="image[]"; filename="image-1.png"`)
-	require.Contains(t, upstreamBody, "Content-Type: image/png")
-	require.Contains(t, upstreamBody, "reference-image")
-
-	require.Equal(t, http.StatusOK, rec.Code)
-	require.Empty(t, gjson.Get(rec.Body.String(), "data.0.b64_json").String())
-	url := gjson.Get(rec.Body.String(), "data.0.url").String()
-	require.True(t, strings.HasPrefix(url, "http://api.example.com/api/v1/generated-images/"), url)
-	require.Equal(t, "make a portrait book cover in the same anime style", gjson.Get(rec.Body.String(), "data.0.revised_prompt").String())
-}
-
-func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationWithInputImageUsesResponsesBridge(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	body := []byte(`{
-		"model":"gpt-image-2",
-		"prompt":"make a portrait book cover in the same anime style",
-		"response_format":"url",
-		"size":"1088x1440",
-		"image":["data:image/png;base64,cmVmZXJlbmNlLWltYWdl"]
-	}`)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Host = "api.example.com"
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = req
-
-	svc := &OpenAIGatewayService{
-		cfg: &config.Config{},
-		httpUpstream: &httpUpstreamRecorder{
-			responses: []*http.Response{
-				{
-					StatusCode: http.StatusServiceUnavailable,
-					Header: http.Header{
-						"Content-Type": []string{"application/json"},
-						"X-Request-Id": []string{"req_img_generation_503"},
-					},
-					Body: io.NopCloser(strings.NewReader(`{"error":{"type":"server_error","message":"images generations endpoint unsupported"}}`)),
-				},
-				{
-					StatusCode: http.StatusOK,
-					Header: http.Header{
-						"Content-Type": []string{"text/event-stream"},
-						"X-Request-Id": []string{"req_img_apikey_responses_bridge"},
-					},
-					Body: io.NopCloser(strings.NewReader(
-						"data: {\"type\":\"response.completed\",\"response\":{\"created_at\":1710000012,\"usage\":{\"input_tokens\":120,\"input_tokens_details\":{\"image_tokens\":100,\"text_tokens\":20},\"output_tokens\":11,\"output_tokens_details\":{\"image_tokens\":11}},\"tool_usage\":{\"image_gen\":{\"images\":1}},\"output\":[{\"type\":\"image_generation_call\",\"result\":\"cmVmLW91dA==\",\"revised_prompt\":\"make a portrait book cover in the same anime style\",\"output_format\":\"png\"}]}}\n\n" +
-							"data: [DONE]\n\n",
-					)),
-				},
-			},
-		},
-	}
-	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
-	require.NoError(t, err)
-
-	account := &Account{
-		ID:       9,
-		Name:     "openai-apikey",
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Credentials: map[string]any{
-			"api_key":    "test-api-key",
-			"base_url":   "https://image-upstream.example/v1",
-			"user_agent": "custom-upstream-user-agent",
-			"model_mapping": map[string]any{
-				"gpt-image-2": "gpt-image-2-codex",
-			},
-		},
-	}
-
-	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Equal(t, 1, result.ImageCount)
-	require.Equal(t, "gpt-image-2", result.Model)
-	require.Equal(t, "gpt-image-2-codex", result.UpstreamModel)
-
-	upstream, ok := svc.httpUpstream.(*httpUpstreamRecorder)
-	require.True(t, ok)
-	require.NotNil(t, upstream.lastReq)
-	require.Len(t, upstream.requests, 2)
-	require.Equal(t, "https://image-upstream.example/v1/images/generations", upstream.requests[0].URL.String())
-	require.Equal(t, "application/json", upstream.requests[0].Header.Get("Content-Type"))
-	require.Equal(t, "gpt-image-2-codex", gjson.GetBytes(upstream.bodies[0], "model").String())
-	require.Equal(t, "data:image/png;base64,cmVmZXJlbmNlLWltYWdl", gjson.GetBytes(upstream.bodies[0], "image.0").String())
-	require.Equal(t, "https://image-upstream.example/v1/responses", upstream.requests[1].URL.String())
-	require.Equal(t, "Bearer test-api-key", upstream.requests[1].Header.Get("Authorization"))
-	require.Equal(t, "application/json", upstream.requests[1].Header.Get("Content-Type"))
-	require.Equal(t, "text/event-stream", upstream.requests[1].Header.Get("Accept"))
-	require.Equal(t, "custom-upstream-user-agent", upstream.requests[1].Header.Get("User-Agent"))
-	require.Equal(t, openAIImagesResponsesMainModel, gjson.GetBytes(upstream.bodies[1], "model").String())
-	require.Equal(t, "application/json; charset=utf-8", rec.Header().Get("Content-Type"))
-	require.True(t, gjson.GetBytes(upstream.bodies[1], "stream").Bool())
-	require.Equal(t, "image_generation", gjson.GetBytes(upstream.bodies[1], "tools.0.type").String())
-	require.Equal(t, "generate", gjson.GetBytes(upstream.bodies[1], "tools.0.action").String())
-	require.Equal(t, "gpt-image-2-codex", gjson.GetBytes(upstream.bodies[1], "tools.0.model").String())
-	require.Equal(t, "1088x1440", gjson.GetBytes(upstream.bodies[1], "tools.0.size").String())
-	require.Equal(t, "make a portrait book cover in the same anime style", gjson.GetBytes(upstream.bodies[1], "input.0.content.0.text").String())
-	require.Equal(t, "data:image/png;base64,cmVmZXJlbmNlLWltYWdl", gjson.GetBytes(upstream.bodies[1], "input.0.content.1.image_url").String())
-	require.False(t, gjson.GetBytes(upstream.bodies[1], "image").Exists())
-	require.False(t, gjson.GetBytes(upstream.bodies[1], "images").Exists())
-
-	require.Equal(t, http.StatusOK, rec.Code)
-	require.Empty(t, gjson.Get(rec.Body.String(), "data.0.b64_json").String())
-	url := gjson.Get(rec.Body.String(), "data.0.url").String()
-	require.True(t, strings.HasPrefix(url, "http://api.example.com/api/v1/generated-images/"), url)
-	require.Equal(t, "make a portrait book cover in the same anime style", gjson.Get(rec.Body.String(), "data.0.revised_prompt").String())
-	require.Equal(t, 100, result.Usage.ImageInputTokens)
-}
-
-func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationWithInputImageUsesValidatedGenerationProbe(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	body := []byte(`{
-		"model":"gpt-image-2",
-		"prompt":"make a portrait book cover in the same anime style",
-		"response_format":"url",
-		"size":"1088x1440",
-		"image":["data:image/png;base64,cmVmZXJlbmNlLWltYWdl"]
-	}`)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Host = "api.example.com"
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = req
-
-	upstream := &httpUpstreamRecorder{
-		resp: &http.Response{
-			StatusCode: http.StatusOK,
-			Header: http.Header{
-				"Content-Type": []string{"application/json"},
-				"X-Request-Id": []string{"req_img_generations_json"},
-			},
-			Body: io.NopCloser(strings.NewReader(`{"created":1710000012,"data":[{"b64_json":"cmVmLW91dA==","revised_prompt":"make a portrait book cover in the same anime style","output_format":"png"}],"usage":{"input_tokens":120,"input_tokens_details":{"image_tokens":100,"text_tokens":20},"output_tokens":11}}`)),
-		},
-	}
-	svc := &OpenAIGatewayService{
-		cfg:          &config.Config{},
-		httpUpstream: upstream,
-	}
-	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
-	require.NoError(t, err)
-
-	account := &Account{
-		ID:       9,
-		Name:     "openai-apikey",
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Credentials: map[string]any{
-			"api_key":    "test-api-key",
-			"base_url":   "https://image-upstream.example/v1",
-			"user_agent": "custom-upstream-user-agent",
-		},
-	}
-
-	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Equal(t, 1, result.ImageCount)
-	require.Equal(t, 100, result.Usage.ImageInputTokens)
-	require.Len(t, upstream.requests, 1)
-
-	require.Equal(t, "https://image-upstream.example/v1/images/generations", upstream.requests[0].URL.String())
-	require.Equal(t, "application/json", upstream.requests[0].Header.Get("Content-Type"))
-	require.Equal(t, "custom-upstream-user-agent", upstream.requests[0].Header.Get("User-Agent"))
-	require.Equal(t, "data:image/png;base64,cmVmZXJlbmNlLWltYWdl", gjson.GetBytes(upstream.bodies[0], "image.0").String())
-
-	require.Equal(t, http.StatusOK, rec.Code)
-	require.Empty(t, gjson.Get(rec.Body.String(), "data.0.b64_json").String())
-	url := gjson.Get(rec.Body.String(), "data.0.url").String()
-	require.True(t, strings.HasPrefix(url, "http://api.example.com/api/v1/generated-images/"), url)
-}
-
-func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationCachesWorkingResponsesPreference(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	body := []byte(`{
-		"model":"gpt-image-2",
-		"prompt":"make a portrait book cover in the same anime style",
-		"response_format":"url",
-		"size":"1088x1440",
-		"image":["data:image/png;base64,cmVmZXJlbmNlLWltYWdl"]
-	}`)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Host = "api.example.com"
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = req
-
-	upstream := &httpUpstreamRecorder{
-		responses: []*http.Response{
-			{
-				StatusCode: http.StatusServiceUnavailable,
-				Header: http.Header{
-					"Content-Type": []string{"application/json"},
-					"X-Request-Id": []string{"req_img_generation_503"},
-				},
-				Body: io.NopCloser(strings.NewReader(`{"error":{"type":"server_error","message":"images generations endpoint unsupported"}}`)),
-			},
-			{
-				StatusCode: http.StatusOK,
-				Header: http.Header{
-					"Content-Type": []string{"text/event-stream"},
-					"X-Request-Id": []string{"req_img_responses_used_image"},
-				},
-				Body: io.NopCloser(strings.NewReader(
-					"data: {\"type\":\"response.completed\",\"response\":{\"created_at\":1710000013,\"usage\":{\"input_tokens\":120,\"input_tokens_details\":{\"image_tokens\":100,\"text_tokens\":20},\"output_tokens\":11,\"output_tokens_details\":{\"image_tokens\":11}},\"tool_usage\":{\"image_gen\":{\"images\":1}},\"output\":[{\"type\":\"image_generation_call\",\"result\":\"dXNlZC1pbWFnZQ==\",\"revised_prompt\":\"used image\",\"output_format\":\"png\"}]}}\n\n" +
-						"data: [DONE]\n\n",
-				)),
-			},
-			{
-				StatusCode: http.StatusOK,
-				Header: http.Header{
-					"Content-Type": []string{"text/event-stream"},
-					"X-Request-Id": []string{"req_img_cached_responses_preference"},
-				},
-				Body: io.NopCloser(strings.NewReader(
-					"data: {\"type\":\"response.completed\",\"response\":{\"created_at\":1710000014,\"usage\":{\"input_tokens\":120,\"input_tokens_details\":{\"image_tokens\":100,\"text_tokens\":20},\"output_tokens\":11,\"output_tokens_details\":{\"image_tokens\":11}},\"tool_usage\":{\"image_gen\":{\"images\":1}},\"output\":[{\"type\":\"image_generation_call\",\"result\":\"cmVzcG9uc2VzLXByZWZlcmVuY2U=\",\"revised_prompt\":\"responses preference\",\"output_format\":\"png\"}]}}\n\n" +
-						"data: [DONE]\n\n",
-				)),
-			},
-		},
-	}
-	svc := &OpenAIGatewayService{
-		cfg:          &config.Config{},
-		httpUpstream: upstream,
-	}
-	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
-	require.NoError(t, err)
-
-	account := &Account{
-		ID:       9,
-		Name:     "openai-apikey",
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Credentials: map[string]any{
-			"api_key":  "test-api-key",
-			"base_url": "https://image-upstream.example/v1",
-		},
-	}
-
-	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Equal(t, 100, result.Usage.ImageInputTokens)
-	require.Len(t, upstream.requests, 2)
-	require.Equal(t, "https://image-upstream.example/v1/images/generations", upstream.requests[0].URL.String())
-	require.Equal(t, "https://image-upstream.example/v1/responses", upstream.requests[1].URL.String())
-	require.Equal(t, "generate", gjson.GetBytes(upstream.bodies[1], "tools.0.action").String())
-	require.Equal(t, "data:image/png;base64,cmVmZXJlbmNlLWltYWdl", gjson.GetBytes(upstream.bodies[1], "input.0.content.1.image_url").String())
-
-	require.Equal(t, http.StatusOK, rec.Code)
-	require.Equal(t, "used image", gjson.Get(rec.Body.String(), "data.0.revised_prompt").String())
-
-	secondReq := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
-	secondReq.Header.Set("Content-Type", "application/json")
-	secondReq.Host = "api.example.com"
-	secondRec := httptest.NewRecorder()
-	secondContext, _ := gin.CreateTestContext(secondRec)
-	secondContext.Request = secondReq
-	secondParsed, err := svc.ParseOpenAIImagesRequest(secondContext, body)
-	require.NoError(t, err)
-
-	secondResult, err := svc.ForwardImages(context.Background(), secondContext, account, body, secondParsed, "")
-	require.NoError(t, err)
-	require.NotNil(t, secondResult)
-	require.Len(t, upstream.requests, 3)
-	require.Equal(t, "https://image-upstream.example/v1/responses", upstream.requests[2].URL.String())
-	require.Equal(t, "data:image/png;base64,cmVmZXJlbmNlLWltYWdl", gjson.GetBytes(upstream.bodies[2], "input.0.content.1.image_url").String())
-	require.Equal(t, http.StatusOK, secondRec.Code)
-	require.Equal(t, "responses preference", gjson.Get(secondRec.Body.String(), "data.0.revised_prompt").String())
-}
-
-func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationFailureFallsThroughToResponses(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	body := []byte(`{
-		"model":"gpt-image-2",
-		"prompt":"make a portrait book cover in the same anime style",
-		"response_format":"url",
-		"size":"1088x1440",
-		"image":["data:image/png;base64,cmVmZXJlbmNlLWltYWdl"]
-	}`)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Host = "api.example.com"
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = req
-
-	upstream := &httpUpstreamRecorder{
-		responses: []*http.Response{
-			{
-				StatusCode: http.StatusServiceUnavailable,
-				Header: http.Header{
-					"Content-Type": []string{"application/json"},
-					"X-Request-Id": []string{"req_img_generation_503"},
-				},
-				Body: io.NopCloser(strings.NewReader(`{"error":{"type":"server_error","message":"images generations endpoint unsupported"}}`)),
-			},
-			{
-				StatusCode: http.StatusOK,
-				Header: http.Header{
-					"Content-Type": []string{"text/event-stream"},
-					"X-Request-Id": []string{"req_img_responses_used_image"},
-				},
-				Body: io.NopCloser(strings.NewReader(
-					"data: {\"type\":\"response.completed\",\"response\":{\"created_at\":1710000013,\"usage\":{\"input_tokens\":120,\"input_tokens_details\":{\"image_tokens\":100,\"text_tokens\":20},\"output_tokens\":11,\"output_tokens_details\":{\"image_tokens\":11}},\"tool_usage\":{\"image_gen\":{\"images\":1}},\"output\":[{\"type\":\"image_generation_call\",\"result\":\"dXNlZC1pbWFnZQ==\",\"revised_prompt\":\"used image\",\"output_format\":\"png\"}]}}\n\n" +
-						"data: [DONE]\n\n",
-				)),
-			},
-		},
-	}
-	svc := &OpenAIGatewayService{
-		cfg:          &config.Config{},
-		httpUpstream: upstream,
-	}
-	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
-	require.NoError(t, err)
-
-	account := &Account{
-		ID:       9,
-		Name:     "openai-apikey",
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Credentials: map[string]any{
-			"api_key":  "test-api-key",
-			"base_url": "https://image-upstream.example/v1",
-		},
-	}
-
-	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Equal(t, 100, result.Usage.ImageInputTokens)
-	require.Len(t, upstream.requests, 2)
-	require.Equal(t, "https://image-upstream.example/v1/images/generations", upstream.requests[0].URL.String())
-	require.Equal(t, "https://image-upstream.example/v1/responses", upstream.requests[1].URL.String())
-	require.NotContains(t, upstream.requests[1].URL.String(), "/images/edits")
-
-	require.Equal(t, http.StatusOK, rec.Code)
-	require.Equal(t, "used image", gjson.Get(rec.Body.String(), "data.0.revised_prompt").String())
-}
-
-func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationEndpointErrorDoesNotPolluteFallbackResponse(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	body := []byte(`{
-		"model":"gpt-image-2",
-		"prompt":"make a portrait book cover in the same anime style",
-		"response_format":"url",
-		"size":"1088x1440",
-		"image":["data:image/png;base64,cmVmZXJlbmNlLWltYWdl"]
-	}`)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Host = "api.example.com"
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = req
-
-	upstream := &httpUpstreamRecorder{
-		responses: []*http.Response{
-			{
-				StatusCode: http.StatusNotFound,
-				Header: http.Header{
-					"Content-Type": []string{"application/json"},
-					"X-Request-Id": []string{"req_img_generation_404"},
-				},
-				Body: io.NopCloser(strings.NewReader(`{"error":{"type":"not_found_error","message":"generation endpoint not found"}}`)),
-			},
-			{
-				StatusCode: http.StatusOK,
-				Header: http.Header{
-					"Content-Type": []string{"text/event-stream"},
-					"X-Request-Id": []string{"req_img_responses_after_404"},
-				},
-				Body: io.NopCloser(strings.NewReader(
-					"data: {\"type\":\"response.completed\",\"response\":{\"created_at\":1710000013,\"usage\":{\"input_tokens\":120,\"input_tokens_details\":{\"image_tokens\":100,\"text_tokens\":20},\"output_tokens\":11,\"output_tokens_details\":{\"image_tokens\":11}},\"tool_usage\":{\"image_gen\":{\"images\":1}},\"output\":[{\"type\":\"image_generation_call\",\"result\":\"dXNlZC1pbWFnZQ==\",\"revised_prompt\":\"used image after endpoint fallback\",\"output_format\":\"png\"}]}}\n\n" +
-						"data: [DONE]\n\n",
-				)),
-			},
-		},
-	}
-	svc := &OpenAIGatewayService{
-		cfg:          &config.Config{},
-		httpUpstream: upstream,
-	}
-	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
-	require.NoError(t, err)
-
-	account := &Account{
-		ID:       9,
-		Name:     "openai-apikey",
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Credentials: map[string]any{
-			"api_key":  "test-api-key",
-			"base_url": "https://image-upstream.example/v1",
-		},
-	}
-
-	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Equal(t, 100, result.Usage.ImageInputTokens)
-	require.Len(t, upstream.requests, 2)
-	require.Equal(t, "https://image-upstream.example/v1/images/generations", upstream.requests[0].URL.String())
-	require.Equal(t, "https://image-upstream.example/v1/responses", upstream.requests[1].URL.String())
-
-	require.Equal(t, http.StatusOK, rec.Code)
-	require.Equal(t, "used image after endpoint fallback", gjson.Get(rec.Body.String(), "data.0.revised_prompt").String())
-	require.NotContains(t, rec.Body.String(), "generation endpoint not found")
-	require.True(t, gjson.Valid(rec.Body.String()))
-}
-
-func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationAllProtocolErrorsReturnOnlyTerminalResponse(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	body := []byte(`{
-		"model":"gpt-image-2",
-		"prompt":"make a portrait book cover in the same anime style",
-		"response_format":"url",
-		"size":"1088x1440",
-		"image":["data:image/png;base64,cmVmZXJlbmNlLWltYWdl"]
-	}`)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = req
-
-	upstream := &httpUpstreamRecorder{
-		responses: []*http.Response{
-			{
-				StatusCode: http.StatusNotFound,
-				Header:     http.Header{"Content-Type": []string{"application/json"}},
-				Body:       io.NopCloser(strings.NewReader(`{"error":{"type":"not_found_error","message":"generation endpoint not found"}}`)),
-			},
-			{
-				StatusCode: http.StatusBadRequest,
-				Header:     http.Header{"Content-Type": []string{"application/json"}},
-				Body:       io.NopCloser(strings.NewReader(`{"error":{"type":"invalid_request_error","message":"responses endpoint unsupported"}}`)),
-			},
-			{
-				StatusCode: http.StatusUnsupportedMediaType,
-				Header:     http.Header{"Content-Type": []string{"application/json"}},
-				Body:       io.NopCloser(strings.NewReader(`{"error":{"type":"invalid_request_error","message":"JSON edits content type unsupported"}}`)),
-			},
-			{
-				StatusCode: http.StatusBadRequest,
-				Header:     http.Header{"Content-Type": []string{"application/json"}},
-				Body:       io.NopCloser(strings.NewReader(`{"error":{"type":"invalid_request_error","code":"content_policy_violation","message":"request blocked by content policy"}}`)),
-			},
-		},
-	}
-	svc := &OpenAIGatewayService{
-		cfg:          &config.Config{},
-		httpUpstream: upstream,
-	}
-	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
-	require.NoError(t, err)
-
-	account := &Account{
-		ID:       9,
-		Name:     "openai-apikey",
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Credentials: map[string]any{
-			"api_key":  "test-api-key",
-			"base_url": "https://image-upstream.example/v1",
-		},
-	}
-
-	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
-	require.Nil(t, result)
-	var upstreamErr *OpenAIImagesUpstreamError
-	require.ErrorAs(t, err, &upstreamErr)
-	require.Equal(t, http.StatusBadRequest, upstreamErr.StatusCode)
-	require.Len(t, upstream.requests, 4)
-
-	require.Equal(t, http.StatusBadRequest, rec.Code)
-	require.JSONEq(t, `{
-		"error": {
-			"type": "invalid_request_error",
-			"code": "content_policy_violation",
-			"message": "request blocked by content policy"
-		}
-	}`, rec.Body.String())
-	require.NotContains(t, rec.Body.String(), "generation endpoint not found")
-	require.NotContains(t, rec.Body.String(), "responses endpoint unsupported")
-	require.NotContains(t, rec.Body.String(), "JSON edits content type unsupported")
-}
-
-func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationZeroReportedImageTokensStillReturnsNativeGeneration(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	body := []byte(`{
-		"model":"gpt-image-2",
-		"prompt":"make a portrait book cover in the same anime style",
-		"response_format":"url",
-		"size":"1088x1440",
-		"image":["data:image/png;base64,cmVmZXJlbmNlLWltYWdl"]
-	}`)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Host = "api.example.com"
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = req
-
-	upstream := &httpUpstreamRecorder{
-		responses: []*http.Response{
-			{
-				StatusCode: http.StatusOK,
-				Header: http.Header{
-					"Content-Type": []string{"application/json"},
-					"X-Request-Id": []string{"req_img_generation_ignored_image"},
-				},
-				Body: io.NopCloser(strings.NewReader(`{"created":1710000013,"data":[{"b64_json":"dGV4dC1vbmx5","revised_prompt":"ignored reference","output_format":"png"}],"usage":{"input_tokens":20,"input_tokens_details":{"image_tokens":0,"text_tokens":20},"output_tokens":11}}`)),
-			},
-		},
-	}
-	svc := &OpenAIGatewayService{
-		cfg:          &config.Config{},
-		httpUpstream: upstream,
-	}
-	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
-	require.NoError(t, err)
-
-	account := &Account{
-		ID:       9,
-		Name:     "openai-apikey",
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Credentials: map[string]any{
-			"api_key":  "test-api-key",
-			"base_url": "https://image-upstream.example/v1",
-		},
-	}
-
-	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Equal(t, 0, result.Usage.ImageInputTokens)
-	require.Len(t, upstream.requests, 1)
-	require.Equal(t, "https://image-upstream.example/v1/images/generations", upstream.requests[0].URL.String())
-	require.Equal(t, http.StatusOK, rec.Code)
-	require.Equal(t, "ignored reference", gjson.Get(rec.Body.String(), "data.0.revised_prompt").String())
-}
-
-func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationAggregatePoolServerErrorReturnsBeforeSlowFallbacks(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	body := []byte(`{
-		"model":"gpt-image-2",
-		"prompt":"make a portrait book cover in the same anime style",
-		"response_format":"url",
-		"size":"1088x1440",
-		"image":["data:image/png;base64,cmVmZXJlbmNlLWltYWdl"]
-	}`)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = req
-
-	upstream := &httpUpstreamRecorder{
-		responses: []*http.Response{
-			{
-				StatusCode: http.StatusServiceUnavailable,
-				Header: http.Header{
-					"Content-Type": []string{"application/json"},
-					"X-Request-Id": []string{"req_img_generations_503"},
-				},
-				Body: io.NopCloser(strings.NewReader(`{"error":{"type":"server_error","message":"Upstream service temporarily unavailable"}}`)),
-			},
-		},
-	}
-	svc := &OpenAIGatewayService{
-		cfg:          &config.Config{},
-		httpUpstream: upstream,
-	}
-	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
-	require.NoError(t, err)
-
-	account := &Account{
-		ID:       9,
-		Name:     "openai-apikey",
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Credentials: map[string]any{
-			"api_key":   "test-api-key",
-			"base_url":  "https://image-upstream.example/v1",
-			"pool_mode": true,
-		},
-	}
-
-	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
-	require.Nil(t, result)
-	var failoverErr *UpstreamFailoverError
-	require.ErrorAs(t, err, &failoverErr)
-	require.Equal(t, http.StatusServiceUnavailable, failoverErr.StatusCode)
-	require.True(t, failoverErr.RetryableOnSameAccount)
-	require.Len(t, upstream.requests, 1)
-	require.Equal(t, "https://image-upstream.example/v1/images/generations", upstream.requests[0].URL.String())
-	require.Equal(t, "application/json", upstream.requests[0].Header.Get("Content-Type"))
-}
-
-func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationAggregateUsesValidatedGeneration(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	body := []byte(`{
-		"model":"gpt-image-2",
-		"prompt":"make a portrait book cover in the same anime style",
-		"response_format":"url",
-		"size":"1088x1440",
-		"image":["data:image/png;base64,cmVmZXJlbmNlLWltYWdl"]
-	}`)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Host = "api.example.com"
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = req
-
-	upstream := &httpUpstreamRecorder{
-		responses: []*http.Response{
-			{
-				StatusCode: http.StatusOK,
-				Header: http.Header{
-					"Content-Type": []string{"application/json"},
-					"X-Request-Id": []string{"req_img_multipart_edits_ok"},
-				},
-				Body: io.NopCloser(strings.NewReader(`{"created":1710000014,"data":[{"b64_json":"bXVsdGlwYXJ0LW91dA==","revised_prompt":"used reference image","output_format":"png"}],"usage":{"input_tokens":120,"input_tokens_details":{"image_tokens":100,"text_tokens":20},"output_tokens":11}}`)),
-			},
-		},
-	}
-	svc := &OpenAIGatewayService{
-		cfg:          &config.Config{},
-		httpUpstream: upstream,
-	}
-	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
-	require.NoError(t, err)
-
-	account := &Account{
-		ID:       9,
-		Name:     "openai-apikey",
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Credentials: map[string]any{
-			"api_key":  "test-api-key",
-			"base_url": "https://image-upstream.example/v1",
-		},
-	}
-
-	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Equal(t, 1, result.ImageCount)
-	require.Equal(t, 100, result.Usage.ImageInputTokens)
-	require.Len(t, upstream.requests, 1)
-	require.Equal(t, "https://image-upstream.example/v1/images/generations", upstream.requests[0].URL.String())
-	require.Equal(t, "application/json", upstream.requests[0].Header.Get("Content-Type"))
-	require.Equal(t, "data:image/png;base64,cmVmZXJlbmNlLWltYWdl", gjson.GetBytes(upstream.bodies[0], "image.0").String())
-
-	require.Equal(t, http.StatusOK, rec.Code)
-	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
-	require.Empty(t, gjson.Get(rec.Body.String(), "data.0.b64_json").String())
-	require.True(t, strings.HasPrefix(gjson.Get(rec.Body.String(), "data.0.url").String(), "http://api.example.com/api/v1/generated-images/"))
-	require.Equal(t, "used reference image", gjson.Get(rec.Body.String(), "data.0.revised_prompt").String())
-}
-
-func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationWithInputImageAndSizePrefersJSONEdit(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	body := []byte(`{
-		"model":"gpt-image-2",
-		"prompt":"make a portrait book cover in the same anime style",
-		"response_format":"url",
-		"size":"1088x1440",
-		"image":["data:image/png;base64,cmVmZXJlbmNlLWltYWdl"]
-	}`)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = req
-
-	upstream := &httpUpstreamRecorder{
-		resp: &http.Response{
-			StatusCode: http.StatusOK,
-			Header: http.Header{
-				"Content-Type": []string{"application/json"},
-				"X-Request-Id": []string{"req_img_explicit_size_json_edit"},
-			},
-			Body: io.NopCloser(strings.NewReader(`{"created":1710000015,"data":[{"b64_json":"bmF0aXZlLWVkaXQ=","revised_prompt":"native edit reference","output_format":"png"}],"usage":{"input_tokens":120,"input_tokens_details":{"image_tokens":100,"text_tokens":20},"output_tokens":11}}`)),
-		},
-	}
-	svc := &OpenAIGatewayService{
-		cfg:          &config.Config{},
-		httpUpstream: upstream,
-	}
-	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
-	require.NoError(t, err)
-
-	account := &Account{
-		ID:       9,
-		Name:     "openai-apikey",
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Credentials: map[string]any{
-			"api_key":  "test-api-key",
-			"base_url": "https://image-upstream.example/v1",
-		},
-		Extra: map[string]any{
-			openai_compat.ExtraKeyResponsesSupported: true,
-		},
-	}
-
-	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Equal(t, 100, result.Usage.ImageInputTokens)
-	require.Len(t, upstream.requests, 1)
-	require.Equal(t, "https://image-upstream.example/v1/images/edits", upstream.requests[0].URL.String())
-	require.Equal(t, "application/json", upstream.requests[0].Header.Get("Content-Type"))
-	require.Equal(t, "gpt-image-2", gjson.GetBytes(upstream.bodies[0], "model").String())
-	require.Equal(t, "1088x1440", gjson.GetBytes(upstream.bodies[0], "size").String())
-	require.Equal(t, "data:image/png;base64,cmVmZXJlbmNlLWltYWdl", gjson.GetBytes(upstream.bodies[0], "images.0.image_url").String())
-	require.False(t, gjson.GetBytes(upstream.bodies[0], "image").Exists())
-	require.False(t, gjson.GetBytes(upstream.bodies[0], "tools").Exists())
-	require.Equal(t, http.StatusOK, rec.Code)
-	require.Equal(t, "native edit reference", gjson.Get(rec.Body.String(), "data.0.revised_prompt").String())
-}
-
-func TestOpenAIImagesPreferredCompatibleRouteConfirmedResponsesOverridesCachedGenerationRoute(t *testing.T) {
-	svc := &OpenAIGatewayService{}
-	account := &Account{
-		ID:       9,
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Credentials: map[string]any{
-			"base_url": "https://image-upstream.example/v1",
-		},
-		Extra: map[string]any{
-			openai_compat.ExtraKeyResponsesSupported: true,
-		},
-	}
-	key, ok := openAIImagesCompatibleRouteKey(account)
-	require.True(t, ok)
-	svc.openaiImagesCompatibleRoutePrefs.Store(key, openAIImagesCompatibleRoutePreference{
-		Route:     openAIImagesCompatibleRouteGenerationsJSON,
-		ExpiresAt: time.Now().Add(time.Minute),
-	})
-
-	route, preferred := svc.openAIImagesPreferredCompatibleRoute(account)
-	require.True(t, preferred)
-	require.Equal(t, openAIImagesCompatibleRouteResponsesBridge, route)
-}
-
-func TestOpenAIImagesPreferredCompatibleRouteExpiredPreferenceFallsBackToConfirmedResponses(t *testing.T) {
-	svc := &OpenAIGatewayService{}
-	account := &Account{
-		ID:       9,
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Credentials: map[string]any{
-			"base_url": "https://image-upstream.example/v1",
-		},
-		Extra: map[string]any{
-			openai_compat.ExtraKeyResponsesSupported: true,
-		},
-	}
-	key, ok := openAIImagesCompatibleRouteKey(account)
-	require.True(t, ok)
-	svc.openaiImagesCompatibleRoutePrefs.Store(key, openAIImagesCompatibleRoutePreference{
-		Route:     openAIImagesCompatibleRouteGenerationsJSON,
-		ExpiresAt: time.Now().Add(-time.Second),
-	})
-
-	route, preferred := svc.openAIImagesPreferredCompatibleRoute(account)
-	require.True(t, preferred)
-	require.Equal(t, openAIImagesCompatibleRouteResponsesBridge, route)
-}
-
-func TestShouldRetryOpenAIImagesAPIKeySameAccountRetriesPoolModeServerErrors(t *testing.T) {
-	account := &Account{
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Credentials: map[string]any{
-			"pool_mode": true,
-		},
-	}
-
-	require.True(t, shouldRetryOpenAIImagesAPIKeySameAccount(account, http.StatusGatewayTimeout, "origin timeout", nil))
-	require.False(t, shouldRetryOpenAIImagesAPIKeySameAccount(account, openAIImagesCloudflareTimeoutStatus, "cloudflare timeout", nil))
-	require.False(t, shouldRetryOpenAIImagesAPIKeySameAccount(account, http.StatusBadRequest, "bad request", nil))
-	require.False(t, shouldRetryOpenAIImagesAPIKeySameAccount(&Account{}, http.StatusGatewayTimeout, "origin timeout", nil))
-}
-
-func TestShouldContinueOpenAIImagesCompatibleAggregateStopsCloudflareTimeout(t *testing.T) {
-	err := &UpstreamFailoverError{
-		StatusCode:             openAIImagesCloudflareTimeoutStatus,
-		RetryableOnSameAccount: false,
-	}
-	require.False(t, shouldContinueOpenAIImagesCompatibleAggregate(err))
-}
-
-func TestShouldContinueOpenAIImagesCompatibleAggregateClassifiesProtocolAndTerminalErrors(t *testing.T) {
-	tests := []struct {
-		name     string
-		err      error
-		expected bool
-	}{
-		{
-			name: "not found endpoint",
-			err: &OpenAIImagesUpstreamError{
-				StatusCode: http.StatusNotFound,
-				Message:    "endpoint not found",
-			},
-			expected: true,
-		},
-		{
-			name: "bad request unknown image parameter",
-			err: &OpenAIImagesUpstreamError{
-				StatusCode: http.StatusBadRequest,
-				Message:    "unknown parameter: image",
-			},
-			expected: true,
-		},
-		{
-			name: "server error unsupported endpoint",
-			err: &UpstreamFailoverError{
-				StatusCode:   http.StatusServiceUnavailable,
-				ResponseBody: []byte(`{"error":{"message":"images generations endpoint unsupported"}}`),
-			},
-			expected: true,
-		},
-		{
-			name: "ordinary server outage",
-			err: &UpstreamFailoverError{
-				StatusCode:   http.StatusServiceUnavailable,
-				ResponseBody: []byte(`{"error":{"message":"generation service temporarily unavailable"}}`),
-			},
-			expected: false,
-		},
-		{
-			name: "authentication failure",
-			err: &OpenAIImagesUpstreamError{
-				StatusCode: http.StatusUnauthorized,
-				ErrorType:  "authentication_error",
-				Code:       "invalid_api_key",
-				Message:    "invalid API key",
-			},
-			expected: false,
-		},
-		{
-			name: "content policy failure",
-			err: &OpenAIImagesUpstreamError{
-				StatusCode: http.StatusBadRequest,
-				Code:       "content_policy_violation",
-				Message:    "request blocked by content policy",
-			},
-			expected: false,
-		},
-		{
-			name: "quota failure disguised as not found",
-			err: &OpenAIImagesUpstreamError{
-				StatusCode: http.StatusNotFound,
-				Code:       "insufficient_quota",
-				Message:    "quota exhausted",
-			},
-			expected: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.expected, shouldContinueOpenAIImagesCompatibleAggregate(tt.err))
-		})
-	}
-}
-
-func TestOpenAIGatewayServiceForwardImages_APIKeyCustomGenerationOrdinaryServerErrorDoesNotProbeOtherProtocols(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	body := []byte(`{
-		"model":"gpt-image-2",
-		"prompt":"make a portrait book cover in the same anime style",
-		"response_format":"url",
-		"size":"1088x1440",
-		"image":["data:image/png;base64,cmVmZXJlbmNlLWltYWdl"]
-	}`)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = req
-
-	upstream := &httpUpstreamRecorder{
-		responses: []*http.Response{
-			{
-				StatusCode: http.StatusServiceUnavailable,
-				Header:     http.Header{"Content-Type": []string{"application/json"}},
-				Body:       io.NopCloser(strings.NewReader(`{"error":{"type":"server_error","message":"generation service temporarily unavailable"}}`)),
-			},
-		},
-	}
-	svc := &OpenAIGatewayService{
-		cfg:          &config.Config{},
-		httpUpstream: upstream,
-	}
-	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
-	require.NoError(t, err)
-
-	account := &Account{
-		ID:       9,
-		Name:     "openai-apikey",
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Credentials: map[string]any{
-			"api_key":  "test-api-key",
-			"base_url": "https://image-upstream.example/v1",
-		},
-	}
-
-	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
-	require.Nil(t, result)
-	var failoverErr *UpstreamFailoverError
-	require.ErrorAs(t, err, &failoverErr)
-	require.Equal(t, http.StatusServiceUnavailable, failoverErr.StatusCode)
-	require.Len(t, upstream.requests, 1)
-	require.Equal(t, "https://image-upstream.example/v1/images/generations", upstream.requests[0].URL.String())
-	require.Empty(t, rec.Body.String())
-}
-
-func TestOpenAIGatewayServiceForwardImages_APIKeyGenerationWithInputImageDoesNotFallbackOnServerError(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	body := []byte(`{
-		"model":"gpt-image-2",
-		"prompt":"make a portrait book cover in the same anime style",
-		"response_format":"url",
-		"size":"1088x1440",
-		"image":["data:image/png;base64,cmVmZXJlbmNlLWltYWdl"]
-	}`)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Host = "api.example.com"
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = req
-
-	upstream := &httpUpstreamRecorder{
-		responses: []*http.Response{
-			{
-				StatusCode: http.StatusServiceUnavailable,
-				Header: http.Header{
-					"Content-Type": []string{"application/json"},
-					"X-Request-Id": []string{"req_img_edits_503"},
-				},
-				Body: io.NopCloser(strings.NewReader(`{"error":{"type":"server_error","message":"Service temporarily unavailable"}}`)),
-			},
-			{
-				StatusCode: http.StatusOK,
-				Header: http.Header{
-					"Content-Type": []string{"application/json"},
-					"X-Request-Id": []string{"req_img_generation_fallback"},
-				},
-				Body: io.NopCloser(strings.NewReader(`{"created":1710000013,"data":[{"b64_json":"ZmFsbGJhY2stb3V0","revised_prompt":"make a portrait book cover in the same anime style","output_format":"png"}]}`)),
-			},
-		},
-	}
-	svc := &OpenAIGatewayService{
-		cfg:          &config.Config{},
-		httpUpstream: upstream,
-	}
-	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
-	require.NoError(t, err)
-
-	account := &Account{
-		ID:       10,
-		Name:     "openai-apikey",
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Credentials: map[string]any{
-			"api_key": "test-api-key",
-		},
-	}
-
-	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
-	require.Nil(t, result)
-	var failoverErr *UpstreamFailoverError
-	require.ErrorAs(t, err, &failoverErr)
-	require.Equal(t, http.StatusServiceUnavailable, failoverErr.StatusCode)
-	require.Len(t, upstream.requests, 1)
-	require.Equal(t, openAIImagesEditsURL, upstream.requests[0].URL.String())
-	require.Contains(t, upstream.requests[0].Header.Get("Content-Type"), "multipart/form-data")
-	require.Empty(t, rec.Body.String())
-}
-
-func TestOpenAIGatewayServiceForwardImages_APIKeyGenerationWithInputImageDoesNotFallbackOnForbidden(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	body := []byte(`{
-		"model":"gpt-image-2",
-		"prompt":"make a portrait book cover in the same anime style",
-		"response_format":"url",
-		"size":"1088x1440",
-		"image":["data:image/png;base64,cmVmZXJlbmNlLWltYWdl"]
-	}`)
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Host = "api.example.com"
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = req
-
-	upstream := &httpUpstreamRecorder{
-		responses: []*http.Response{
-			{
-				StatusCode: http.StatusForbidden,
-				Header: http.Header{
-					"Content-Type": []string{"application/json"},
-					"X-Request-Id": []string{"req_img_edits_403"},
-				},
-				Body: io.NopCloser(strings.NewReader(`{"error":{"type":"permission_error","code":"forbidden","message":"access forbidden"}}`)),
-			},
-			{
-				StatusCode: http.StatusOK,
-				Header: http.Header{
-					"Content-Type": []string{"application/json"},
-					"X-Request-Id": []string{"req_img_generation_fallback_403"},
-				},
-				Body: io.NopCloser(strings.NewReader(`{"created":1710000014,"data":[{"b64_json":"ZmFsbGJhY2stb3V0","revised_prompt":"make a portrait book cover in the same anime style","output_format":"png"}]}`)),
-			},
-		},
-	}
-	svc := &OpenAIGatewayService{
-		cfg:          &config.Config{},
-		httpUpstream: upstream,
-	}
-	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
-	require.NoError(t, err)
-
-	account := &Account{
-		ID:       11,
-		Name:     "openai-apikey",
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Credentials: map[string]any{
-			"api_key": "test-api-key",
-		},
-	}
-
-	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
-	require.Nil(t, result)
-	var failoverErr *UpstreamFailoverError
-	require.ErrorAs(t, err, &failoverErr)
-	require.Equal(t, http.StatusForbidden, failoverErr.StatusCode)
-	require.Len(t, upstream.requests, 1)
-	require.Equal(t, openAIImagesEditsURL, upstream.requests[0].URL.String())
-	require.Empty(t, rec.Body.String())
 }
 
 func TestOpenAIGatewayServiceForwardImages_APIKeyStreamJSONResponseBillsImage(t *testing.T) {
@@ -2914,7 +1340,6 @@ func TestOpenAIGatewayServiceForwardImages_APIKeyEditUsesConfiguredV1BaseURL(t *
 	writer := multipart.NewWriter(&body)
 	require.NoError(t, writer.WriteField("model", "gpt-image-2"))
 	require.NoError(t, writer.WriteField("prompt", "replace background"))
-	require.NoError(t, writer.WriteField("response_format", "url"))
 	imagePart, err := writer.CreateFormFile("image", "source.png")
 	require.NoError(t, err)
 	_, err = imagePart.Write([]byte("png-image-content"))
@@ -2967,69 +1392,8 @@ func TestOpenAIGatewayServiceForwardImages_APIKeyEditUsesConfiguredV1BaseURL(t *
 	require.Contains(t, upstream.lastReq.Header.Get("Content-Type"), "multipart/form-data")
 	require.Contains(t, string(upstream.lastBody), `name="model"`)
 	require.Contains(t, string(upstream.lastBody), "gpt-image-2")
-	require.NotContains(t, string(upstream.lastBody), `name="response_format"`)
 	require.Equal(t, http.StatusOK, rec.Code)
-	require.Empty(t, gjson.Get(rec.Body.String(), "data.0.b64_json").String())
-	require.True(t, strings.HasPrefix(gjson.Get(rec.Body.String(), "data.0.url").String(), "http://"), rec.Body.String())
-}
-
-func TestOpenAIGatewayServiceForwardImages_APIKeyMultipartGenerationWithUploadedImageUsesMultipartEdit(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	require.NoError(t, writer.WriteField("model", "gpt-image-2"))
-	require.NoError(t, writer.WriteField("prompt", "use the uploaded reference"))
-	imagePart, err := writer.CreateFormFile("image", "reference.png")
-	require.NoError(t, err)
-	_, err = imagePart.Write([]byte("reference-image"))
-	require.NoError(t, err)
-	require.NoError(t, writer.Close())
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body.Bytes()))
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Host = "api.example.com"
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = req
-
-	upstream := &httpUpstreamRecorder{
-		resp: &http.Response{
-			StatusCode: http.StatusOK,
-			Header: http.Header{
-				"Content-Type": []string{"application/json"},
-				"X-Request-Id": []string{"req_img_multipart_generation"},
-			},
-			Body: io.NopCloser(strings.NewReader(`{"created":1710000009,"data":[{"b64_json":"ZWRpdGVk","revised_prompt":"use the uploaded reference"}]}`)),
-		},
-	}
-	svc := &OpenAIGatewayService{
-		cfg:          &config.Config{},
-		httpUpstream: upstream,
-	}
-	parsed, err := svc.ParseOpenAIImagesRequest(c, body.Bytes())
-	require.NoError(t, err)
-	require.True(t, parsed.Multipart)
-	require.Len(t, parsed.Uploads, 1)
-
-	account := &Account{
-		ID:       12,
-		Name:     "openai-apikey",
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Credentials: map[string]any{
-			"api_key": "test-api-key",
-		},
-	}
-
-	result, err := svc.ForwardImages(context.Background(), c, account, body.Bytes(), parsed, "")
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Len(t, upstream.requests, 1)
-	require.Equal(t, openAIImagesEditsURL, upstream.requests[0].URL.String())
-	require.Contains(t, upstream.requests[0].Header.Get("Content-Type"), "multipart/form-data")
-	require.Contains(t, string(upstream.bodies[0]), `name="image[]"; filename="reference.png"`)
-	require.Contains(t, string(upstream.bodies[0]), "reference-image")
+	require.Equal(t, "ZWRpdGVk", gjson.Get(rec.Body.String(), "data.0.b64_json").String())
 }
 
 func TestOpenAIGatewayServiceForwardImages_OAuthStreamingTransformsEvents(t *testing.T) {
@@ -3085,7 +1449,7 @@ func TestOpenAIGatewayServiceForwardImages_OAuthStreamingTransformsEvents(t *tes
 	require.Equal(t, "image_generation.partial_image", gjson.Get(partial.Data, "type").String())
 	require.Equal(t, int64(1710000001), gjson.Get(partial.Data, "created_at").Int())
 	require.Equal(t, "cGFydGlhbA==", gjson.Get(partial.Data, "b64_json").String())
-	require.True(t, strings.HasPrefix(gjson.Get(partial.Data, "url").String(), "http://example.com/api/v1/generated-images/"))
+	require.Equal(t, "data:image/png;base64,cGFydGlhbA==", gjson.Get(partial.Data, "url").String())
 	require.Equal(t, "gpt-image-2", gjson.Get(partial.Data, "model").String())
 	require.Equal(t, "png", gjson.Get(partial.Data, "output_format").String())
 	require.Equal(t, "high", gjson.Get(partial.Data, "quality").String())
@@ -3097,7 +1461,7 @@ func TestOpenAIGatewayServiceForwardImages_OAuthStreamingTransformsEvents(t *tes
 	require.Equal(t, "image_generation.completed", gjson.Get(completed.Data, "type").String())
 	require.Equal(t, int64(1710000001), gjson.Get(completed.Data, "created_at").Int())
 	require.Equal(t, "ZmluYWw=", gjson.Get(completed.Data, "b64_json").String())
-	require.True(t, strings.HasPrefix(gjson.Get(completed.Data, "url").String(), "http://example.com/api/v1/generated-images/"))
+	require.Equal(t, "data:image/png;base64,ZmluYWw=", gjson.Get(completed.Data, "url").String())
 	require.Equal(t, "gpt-image-2", gjson.Get(completed.Data, "model").String())
 	require.Equal(t, "png", gjson.Get(completed.Data, "output_format").String())
 	require.Equal(t, "high", gjson.Get(completed.Data, "quality").String())
@@ -3263,23 +1627,6 @@ func TestOpenAIGatewayServiceForwardImages_OAuthEditsStreamingTransformsEvents(t
 	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
 	require.NoError(t, err)
 
-	sourceUpload := newOpenAIImagesUploadFromBytes([]byte("source-image"), "image/png", "source.png")
-	maskUpload := newOpenAIImagesUploadFromBytes([]byte("mask-image"), "image/png", "mask.png")
-	originalDownloader := openAIImagesInputImageDownloader
-	openAIImagesInputImageDownloader = func(ctx context.Context, rawURL string, index int, mask bool) (OpenAIImagesUpload, error) {
-		switch rawURL {
-		case "https://example.com/source.png":
-			require.False(t, mask)
-			return sourceUpload, nil
-		case "https://example.com/mask.png":
-			require.True(t, mask)
-			return maskUpload, nil
-		default:
-			return OpenAIImagesUpload{}, fmt.Errorf("unexpected image url: %s", rawURL)
-		}
-	}
-	t.Cleanup(func() { openAIImagesInputImageDownloader = originalDownloader })
-
 	upstream := &httpUpstreamRecorder{
 		resp: &http.Response{
 			StatusCode: http.StatusOK,
@@ -3311,15 +1658,15 @@ func TestOpenAIGatewayServiceForwardImages_OAuthEditsStreamingTransformsEvents(t
 	require.NotNil(t, result)
 	require.Equal(t, 1, result.ImageCount)
 	require.Equal(t, "edit", gjson.GetBytes(upstream.lastBody, "tools.0.action").String())
-	require.Equal(t, sourceUpload.ModerationDataURL(), gjson.GetBytes(upstream.lastBody, "input.0.content.1.image_url").String())
-	require.Equal(t, maskUpload.ModerationDataURL(), gjson.GetBytes(upstream.lastBody, "tools.0.input_image_mask.image_url").String())
+	require.Equal(t, "https://example.com/source.png", gjson.GetBytes(upstream.lastBody, "input.0.content.1.image_url").String())
+	require.Equal(t, "https://example.com/mask.png", gjson.GetBytes(upstream.lastBody, "tools.0.input_image_mask.image_url").String())
 	events := parseOpenAIImageTestSSEEvents(rec.Body.String())
 	partial, ok := findOpenAIImageTestSSEEvent(events, "image_edit.partial_image")
 	require.True(t, ok)
 	require.Equal(t, "image_edit.partial_image", gjson.Get(partial.Data, "type").String())
 	require.Equal(t, int64(1710000003), gjson.Get(partial.Data, "created_at").Int())
 	require.Equal(t, "cGFydGlhbA==", gjson.Get(partial.Data, "b64_json").String())
-	require.True(t, strings.HasPrefix(gjson.Get(partial.Data, "url").String(), "http://example.com/api/v1/generated-images/"))
+	require.Equal(t, "data:image/webp;base64,cGFydGlhbA==", gjson.Get(partial.Data, "url").String())
 	require.Equal(t, "gpt-image-2", gjson.Get(partial.Data, "model").String())
 	require.Equal(t, "webp", gjson.Get(partial.Data, "output_format").String())
 	require.Equal(t, "high", gjson.Get(partial.Data, "quality").String())
@@ -3331,7 +1678,7 @@ func TestOpenAIGatewayServiceForwardImages_OAuthEditsStreamingTransformsEvents(t
 	require.Equal(t, "image_edit.completed", gjson.Get(completed.Data, "type").String())
 	require.Equal(t, int64(1710000003), gjson.Get(completed.Data, "created_at").Int())
 	require.Equal(t, "ZWRpdGVk", gjson.Get(completed.Data, "b64_json").String())
-	require.True(t, strings.HasPrefix(gjson.Get(completed.Data, "url").String(), "http://example.com/api/v1/generated-images/"))
+	require.Equal(t, "data:image/webp;base64,ZWRpdGVk", gjson.Get(completed.Data, "url").String())
 	require.Equal(t, "gpt-image-2", gjson.Get(completed.Data, "model").String())
 	require.Equal(t, "webp", gjson.Get(completed.Data, "output_format").String())
 	require.Equal(t, "high", gjson.Get(completed.Data, "quality").String())
@@ -3349,7 +1696,7 @@ func TestBuildOpenAIImagesResponsesRequest_PassesThroughNForMultiImageModels(t *
 		N:        2,
 	}
 
-	body, err := buildOpenAIImagesResponsesRequest(context.Background(), parsed, "gpt-image-2")
+	body, err := buildOpenAIImagesResponsesRequest(parsed, "gpt-image-2")
 	require.NoError(t, err)
 	require.NotNil(t, body)
 	require.Equal(t, int64(2), gjson.GetBytes(body, "tools.0.n").Int())
@@ -3365,7 +1712,7 @@ func TestBuildOpenAIImagesResponsesRequest_DoesNotPassNForDallE3(t *testing.T) {
 		N:        2,
 	}
 
-	body, err := buildOpenAIImagesResponsesRequest(context.Background(), parsed, "dall-e-3")
+	body, err := buildOpenAIImagesResponsesRequest(parsed, "dall-e-3")
 	require.NoError(t, err)
 	require.NotNil(t, body)
 	require.False(t, gjson.GetBytes(body, "tools.0.n").Exists())
@@ -3374,32 +1721,20 @@ func TestBuildOpenAIImagesResponsesRequest_DoesNotPassNForDallE3(t *testing.T) {
 
 func TestBuildOpenAIImagesResponsesRequest_StripsInputFidelity(t *testing.T) {
 	parsed := &OpenAIImagesRequest{
-		Endpoint:       openAIImagesEditsEndpoint,
-		Model:          "gpt-image-2",
-		Prompt:         "replace background",
-		InputFidelity:  "high",
-		InputImageURLs: []string{"data:image/png;base64,QUJD"},
+		Endpoint:      openAIImagesEditsEndpoint,
+		Model:         "gpt-image-2",
+		Prompt:        "replace background",
+		InputFidelity: "high",
+		InputImageURLs: []string{
+			"https://example.com/source.png",
+		},
 	}
 
-	body, err := buildOpenAIImagesResponsesRequest(context.Background(), parsed, "gpt-image-2")
+	body, err := buildOpenAIImagesResponsesRequest(parsed, "gpt-image-2")
 	require.NoError(t, err)
 	require.NotNil(t, body)
 	require.False(t, gjson.GetBytes(body, "tools.0.input_fidelity").Exists())
 	require.Equal(t, "edit", gjson.GetBytes(body, "tools.0.action").String())
-}
-
-func TestBuildOpenAIImagesResponsesRequest_GenerationWithInputImageUsesGenerateAction(t *testing.T) {
-	parsed := &OpenAIImagesRequest{
-		Endpoint:       openAIImagesGenerationsEndpoint,
-		Model:          "gpt-image-2",
-		Prompt:         "remove text",
-		InputImageURLs: []string{"data:image/png;base64,QUJD"},
-	}
-
-	body, err := buildOpenAIImagesResponsesRequest(context.Background(), parsed, "gpt-image-2")
-	require.NoError(t, err)
-	require.Equal(t, "generate", gjson.GetBytes(body, "tools.0.action").String())
-	require.Equal(t, "data:image/png;base64,QUJD", gjson.GetBytes(body, "input.0.content.1.image_url").String())
 }
 
 func TestCollectOpenAIImagesFromResponsesBody_FallsBackToOutputItemDone(t *testing.T) {
@@ -3489,7 +1824,7 @@ func TestOpenAIGatewayServiceForwardImages_OAuthStreamingHandlesOutputItemDoneFa
 	require.Equal(t, "image_generation.completed", gjson.Get(completed.Data, "type").String())
 	require.Equal(t, int64(1710000005), gjson.Get(completed.Data, "created_at").Int())
 	require.Equal(t, "ZmluYWw=", gjson.Get(completed.Data, "b64_json").String())
-	require.True(t, strings.HasPrefix(gjson.Get(completed.Data, "url").String(), "http://example.com/api/v1/generated-images/"))
+	require.Equal(t, "data:image/png;base64,ZmluYWw=", gjson.Get(completed.Data, "url").String())
 	require.Equal(t, "gpt-image-2", gjson.Get(completed.Data, "model").String())
 	require.JSONEq(t, `{"images":1}`, gjson.Get(completed.Data, "usage").Raw)
 	require.NotContains(t, rec.Body.String(), "event: error")

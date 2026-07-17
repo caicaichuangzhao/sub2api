@@ -6,10 +6,10 @@ import (
 	"encoding/binary"
 	"fmt"
 	"image"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"strings"
-
-	_ "golang.org/x/image/webp"
 )
 
 const maxOpenAIImageDimensionProbeBytes int64 = 1 << 20
@@ -77,7 +77,8 @@ func detectOpenAIWebPDimensions(header []byte) (int, int, bool) {
 
 func reconcileOpenAIResponsesImageResultSizes(results []openAIResponsesImageResult, firstMeta *openAIResponsesImageResult) {
 	for i := range results {
-		// Metadata reflects the untouched upstream bytes for billing and display.
+		// ChatGPT OAuth can normalize requested controls to "auto". The final
+		// image bytes are authoritative for response metadata and tier billing.
 		if actualSize := detectOpenAIImageResultSize(results[i].Result); actualSize != "" {
 			results[i].Size = actualSize
 		}

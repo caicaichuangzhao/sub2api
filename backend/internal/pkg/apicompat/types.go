@@ -255,20 +255,6 @@ type ResponsesTool struct {
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
 	Strict      *bool           `json:"strict,omitempty"`
 
-	// type=image_generation
-	Model             string `json:"model,omitempty"`
-	Action            string `json:"action,omitempty"` // "generate" | "edit"
-	Size              string `json:"size,omitempty"`
-	Quality           string `json:"quality,omitempty"`
-	Background        string `json:"background,omitempty"`
-	OutputFormat      string `json:"output_format,omitempty"`
-	Moderation        string `json:"moderation,omitempty"`
-	InputFidelity     string `json:"input_fidelity,omitempty"`
-	Style             string `json:"style,omitempty"`
-	OutputCompression *int   `json:"output_compression,omitempty"`
-	PartialImages     *int   `json:"partial_images,omitempty"`
-	N                 *int   `json:"n,omitempty"`
-
 	// type=namespace 的子工具列表（tools 与 children 二选一，语义相同）。
 	Tools    []ResponsesTool `json:"tools,omitempty"`
 	Children []ResponsesTool `json:"children,omitempty"`
@@ -343,12 +329,6 @@ type ResponsesOutput struct {
 
 	// type=web_search_call
 	Action *WebSearchAction `json:"action,omitempty"`
-
-	// type=image_generation_call
-	Result        string `json:"result,omitempty"` // base64 image payload
-	RevisedPrompt string `json:"revised_prompt,omitempty"`
-	OutputFormat  string `json:"output_format,omitempty"`
-	Size          string `json:"size,omitempty"`
 }
 
 // MarshalJSON 处理 tool_search_call 项的线上形态（复用 CallID/Arguments 字段）：
@@ -528,7 +508,6 @@ type ResponsesInputTokensDetails struct {
 type ResponsesOutputTokensDetails struct {
 	ReasoningTokens          int `json:"reasoning_tokens,omitempty"`
 	AudioTokens              int `json:"audio_tokens,omitempty"`
-	ImageTokens              int `json:"image_tokens,omitempty"`
 	AcceptedPredictionTokens int `json:"accepted_prediction_tokens,omitempty"`
 	RejectedPredictionTokens int `json:"rejected_prediction_tokens,omitempty"`
 }
@@ -588,19 +567,7 @@ type ResponsesStreamEvent struct {
 // ChatCompletionsRequest is the request body for POST /v1/chat/completions.
 type ChatCompletionsRequest struct {
 	Model               string             `json:"model"`
-	Prompt              string             `json:"prompt,omitempty"`
 	Messages            []ChatMessage      `json:"messages"`
-	Modalities          []string           `json:"modalities,omitempty"`
-	N                   *int               `json:"n,omitempty"`
-	Size                string             `json:"size,omitempty"`
-	Quality             string             `json:"quality,omitempty"`
-	Background          string             `json:"background,omitempty"`
-	OutputFormat        string             `json:"output_format,omitempty"`
-	Moderation          string             `json:"moderation,omitempty"`
-	InputFidelity       string             `json:"input_fidelity,omitempty"`
-	Style               string             `json:"style,omitempty"`
-	OutputCompression   *int               `json:"output_compression,omitempty"`
-	PartialImages       *int               `json:"partial_images,omitempty"`
 	Instructions        string             `json:"instructions,omitempty"` // OpenAI Responses API compat
 	MaxTokens           *int               `json:"max_tokens,omitempty"`
 	MaxCompletionTokens *int               `json:"max_completion_tokens,omitempty"`

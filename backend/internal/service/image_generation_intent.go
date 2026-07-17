@@ -31,11 +31,6 @@ func ImageGenerationPermissionMessage() string {
 	return imageGenerationPermissionMessage
 }
 
-// IsGeminiImageGenerationModel reports whether a Gemini-family model can generate images.
-func IsGeminiImageGenerationModel(model string) bool {
-	return isImageGenerationModel(model)
-}
-
 // GroupAllowsImageGeneration preserves ungrouped-key behavior and enforces the flag when a group is present.
 func GroupAllowsImageGeneration(group *Group) bool {
 	return group == nil || group.AllowImageGeneration
@@ -46,14 +41,14 @@ func IsImageGenerationIntent(endpoint string, requestedModel string, body []byte
 	if IsImageGenerationEndpoint(endpoint) {
 		return true
 	}
-	if isOpenAIImageGenerationModel(requestedModel) || IsGeminiImageGenerationModel(requestedModel) {
+	if isOpenAIImageGenerationModel(requestedModel) {
 		return true
 	}
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return false
 	}
 
-	var modelSeen, modalitiesSeen, toolsSeen, inputSeen, toolChoiceSeen bool
+	var modelSeen, toolsSeen, inputSeen, toolChoiceSeen bool
 	imageIntent := false
 	parseRawJSONView(body).ForEach(func(key, value gjson.Result) bool {
 		// GetBytes returns the first duplicate key; retain that behavior while walking the root once.
@@ -61,13 +56,7 @@ func IsImageGenerationIntent(endpoint string, requestedModel string, body []byte
 		case "model":
 			if !modelSeen {
 				modelSeen = true
-				model := strings.TrimSpace(value.String())
-				imageIntent = isOpenAIImageGenerationModel(model) || IsGeminiImageGenerationModel(model)
-			}
-		case "modalities":
-			if !modalitiesSeen {
-				modalitiesSeen = true
-				imageIntent = openAIJSONModalitiesContainImage(value)
+				imageIntent = isOpenAIImageGenerationModel(strings.TrimSpace(value.String()))
 			}
 		case "tools":
 			if !toolsSeen {
@@ -85,7 +74,7 @@ func IsImageGenerationIntent(endpoint string, requestedModel string, body []byte
 				imageIntent = openAIJSONToolChoiceSelectsImageGeneration(value)
 			}
 		}
-		return !imageIntent && (!modelSeen || !modalitiesSeen || !toolsSeen || !inputSeen || !toolChoiceSeen)
+		return !imageIntent && (!modelSeen || !toolsSeen || !inputSeen || !toolChoiceSeen)
 	})
 	return imageIntent
 }
@@ -180,16 +169,13 @@ func IsImageGenerationIntentMap(endpoint string, requestedModel string, reqBody 
 	if IsImageGenerationEndpoint(endpoint) {
 		return true
 	}
-	if isOpenAIImageGenerationModel(requestedModel) || IsGeminiImageGenerationModel(requestedModel) {
+	if isOpenAIImageGenerationModel(requestedModel) {
 		return true
 	}
 	if reqBody == nil {
 		return false
 	}
-	if model := firstNonEmptyString(reqBody["model"]); isOpenAIImageGenerationModel(model) || IsGeminiImageGenerationModel(model) {
-		return true
-	}
-	if openAIAnyModalitiesContainImage(reqBody["modalities"]) {
+	if isOpenAIImageGenerationModel(firstNonEmptyString(reqBody["model"])) {
 		return true
 	}
 	if hasOpenAIImageGenerationTool(reqBody) {
@@ -231,21 +217,6 @@ func openAIJSONToolsContainImageGeneration(tools gjson.Result) bool {
 			return false
 		}
 		if isImageGenNamespaceTool(item) {
-			found = true
-			return false
-		}
-		return true
-	})
-	return found
-}
-
-func openAIJSONModalitiesContainImage(modalities gjson.Result) bool {
-	if !modalities.IsArray() {
-		return false
-	}
-	found := false
-	modalities.ForEach(func(_, item gjson.Result) bool {
-		if strings.TrimSpace(strings.ToLower(item.String())) == "image" {
 			found = true
 			return false
 		}
@@ -330,24 +301,6 @@ func openAIRequestBodyImageGenerationToolNeedsNormalization(body []byte) bool {
 		return true
 	})
 	return needsNormalization
-}
-
-func openAIAnyModalitiesContainImage(modalities any) bool {
-	switch v := modalities.(type) {
-	case []any:
-		for _, item := range v {
-			if strings.TrimSpace(strings.ToLower(firstNonEmptyString(item))) == "image" {
-				return true
-			}
-		}
-	case []string:
-		for _, item := range v {
-			if strings.TrimSpace(strings.ToLower(item)) == "image" {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func openAIJSONToolChoiceSelectsImageGeneration(choice gjson.Result) bool {
