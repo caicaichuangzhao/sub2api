@@ -52,6 +52,18 @@ docker compose -f deploy/docker-compose.dev.yml up -d --build --no-deps sub2api
 
 禁止在常规应用升级中删除或重建 PostgreSQL、Redis 及其数据目录。
 
+## 定价更新修复
+
+2026-07-18 修复了无时段定价配置时渠道保存失败的问题，提交为 `efd761e3f`。
+空的 `time_pricing` 现在以合法 JSON `null` 写入 JSONB 字段，渠道模型定价和账号统计定价两条写入路径均覆盖回归测试。
+
+修复后的 Docker 镜像：
+
+- 镜像标签：`sub2api-custom:v0.1.160-pricing-fix-efd761e3f`
+- 导出文件：`backups/sub2api-image-20260718-1717-v0.1.160-pricing-fix-efd761e3f.tar`
+- 文件大小：`60054528` 字节
+- SHA256：`70bbb356f6ac43ef4a67290a52f4b8fcd72dc756a7a3a1ea90dff25b3039ba14`
+
 ## GitHub 同步
 
 升级分支同步到用户仓库：
