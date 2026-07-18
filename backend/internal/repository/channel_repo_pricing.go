@@ -263,7 +263,9 @@ func createModelPricingExec(ctx context.Context, exec dbExec, pricing *service.C
 
 func marshalTimePricing(config *service.TimePricingConfig) ([]byte, error) {
 	if config == nil {
-		return nil, nil
+		// Keep the driver from binding a typed nil []byte as an empty string;
+		// JSONB accepts the literal null and preserves the absence of a config.
+		return []byte("null"), nil
 	}
 	value, err := json.Marshal(config)
 	if err != nil {
